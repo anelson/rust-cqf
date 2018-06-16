@@ -1,0 +1,6 @@
+[package]
+name = "cqf"
+version = "0.1.0"
+authors = ["Adam Nelson <anelson@apocryph.org>"]
+
+[dependencies]
