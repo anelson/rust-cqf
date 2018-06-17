@@ -21,6 +21,7 @@ struct Metadata {
     ndistinct_elements: usize,
     nslots: usize,
     noccupied_slots: usize,
+    max_slots: usize,
 }
 
 pub struct CQF {
@@ -53,6 +54,11 @@ impl CQF {
         let total_slots = 1usize << q; //2^q slots in the filter
         let nblocks = (total_slots + SLOTS_PER_BLOCK - 1) / SLOTS_PER_BLOCK;
 
+        //Conservatively, set the maximum number of elements to 95% of the total capacity
+        //Realistically this structure can go higher than that but there starts to be a performance
+        //penalty and it's better to resize at that point
+        let max_slots = ((total_slots as f64) * 0.95) as usize;
+
         return Metadata {
             n,
             r,
@@ -62,6 +68,7 @@ impl CQF {
             ndistinct_elements: 0,
             nslots: total_slots,
             noccupied_slots: 0,
+            max_slots,
         };
     }
 }
@@ -72,7 +79,7 @@ mod tests {
 
     #[test]
     fn creates_empty_filter() {
-        let filter = CQF::new(10000, 9);
+        let _filter = CQF::new(10000, 9);
     }
 
     #[test]
@@ -90,5 +97,12 @@ mod tests {
         assert_eq!(filter.meta.q, 14);
         assert_eq!(filter.meta.nslots, 1usize << 14);
         assert_eq!(filter.meta.nblocks, (filter.meta.nslots + 64 - 1) / 64);
+        assert_eq!(filter.meta.noccupied_slots, 0);
+        assert_eq!(filter.meta.nelements, 0);
+        assert_eq!(filter.meta.ndistinct_elements, 0);
+        assert_eq!(
+            filter.meta.max_slots,
+            ((filter.meta.nslots as f64) * 0.95) as usize
+        );
     }
 }
