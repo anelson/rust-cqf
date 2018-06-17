@@ -1,40 +1,3 @@
-//! A trait which when implemented on a type exposes the computation of a MurmurHash64 64-bit
-//! non-cryptographic hash on an instance of that type.
-//!
-//! This is intended to be used to produce the 64-bit key which is used to identify elements in the
-//! RSQF filter structure.  An optimized implementation for 64-bit unsigned integers is provided,
-//! as well as a general-purpose implementation for slices of `u8`s.  Support for other types could
-//! be built using these primitives
-trait MurmurHasher64 {
-    fn murmur_hash64(&self, seed: u64) -> u64;
-}
-
-const M: u64 = 0xc6a4a7935bd1e995;
-const R: u64 = 47;
-
-impl MurmurHasher64 for u64 {
-    fn murmur_hash64(&self, seed: u64) -> u64 {
-        let mut h: u64 = seed ^ M.wrapping_mul(8); //'8' here is size_of(u64)
-
-        //Run a specialized version of the murmur hash algorithm for this case where
-        //the entire input is one 64-bit value
-        let mut k: u64 = *self;
-
-        k = k.wrapping_mul(M); //k *= m;
-        k ^= k >> R;
-        k = k.wrapping_mul(M); //k *= m;
-
-        h ^= k;
-        h = h.wrapping_mul(M); //h *= m;
-
-        h ^= h >> R;
-        h = h.wrapping_mul(M); //h *= m;
-        h ^= h >> R;
-
-        return h;
-    }
-}
-
 #[inline]
 unsafe fn get_block64(p: *const u64, i: usize) -> u64 {
     return *p.offset(i as isize);
@@ -101,7 +64,7 @@ unsafe fn read_partial_u64(data: *const u8, len: usize) -> u64 {
     }
 }
 
-fn unsafe_murmur_hash3(key: *const u8, len: usize, seed: u32) -> u128 {
+pub fn unsafe_murmur_hash3(key: *const u8, len: usize, seed: u32) -> u128 {
     const C1: u64 = 0x87c37b91114253d5_u64;
     const C2: u64 = 0x4cf5ad432745937f_u64;
 

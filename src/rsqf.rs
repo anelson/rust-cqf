@@ -5,6 +5,7 @@ const BLOCK_OFFSET_BITS: usize = (6); //6 seems fastest
 const SLOTS_PER_BLOCK: usize = (1 << BLOCK_OFFSET_BITS);
 const METADATA_WORDS_PER_BLOCK: usize = ((SLOTS_PER_BLOCK + 63) / 64);
 
+#[allow(dead_code)] // for now
 struct Block {
     offset: u8,
     occupieds: [u64; METADATA_WORDS_PER_BLOCK],
@@ -12,6 +13,7 @@ struct Block {
     slots: [u64; BITS_PER_SLOT],
 }
 
+#[allow(dead_code)] // for now
 struct Metadata {
     n: usize,
     q: u8,
@@ -24,6 +26,7 @@ struct Metadata {
     max_slots: usize,
 }
 
+#[allow(dead_code)] // for now
 pub struct RSQF {
     meta: Metadata,
     blocks: Vec<Block>,
@@ -38,6 +41,8 @@ type HashKey = u64;
 /// This should probably be richer over time
 type FilterResult = Result<usize, &'static str>;
 
+#[allow(dead_code)] // for now
+#[allow(unused_variables)] // for now
 impl RSQF {
     pub fn new(n: usize, r: u8) -> RSQF {
         assert!(SLOTS_PER_BLOCK == 64usize); //this code assumes 64 slots per block always
@@ -56,7 +61,6 @@ impl RSQF {
     /// `2^-r`
     pub fn get_count(&self, hash: HashKey) -> usize {
         panic!("NYI");
-        return 0;
     }
 
     /// Adds `count` to the total count for `hash` in the filter.
@@ -70,7 +74,6 @@ impl RSQF {
     /// capacity
     pub fn add_count(&self, hash: HashKey, count: usize) -> FilterResult {
         panic!("NYI");
-        return Ok(0);
     }
 
     /// Increments the count of `hash` by one.
@@ -97,7 +100,6 @@ impl RSQF {
     /// been removed from the filter, or an error if `hash` was not found in the filter
     pub fn sub_count(&self, hash: HashKey, count: usize) -> FilterResult {
         panic!("NYI");
-        return Ok(0);
     }
 
     pub fn dec_count(&self, hash: HashKey) -> FilterResult {
