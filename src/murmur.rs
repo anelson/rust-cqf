@@ -87,7 +87,7 @@ pub fn unsafe_murmur_hash3(key: *const u8, len: usize, seed: u32) -> u128 {
             h1 ^= k1;
 
             h1 = rotl(h1, 27);
-            h1.wrapping_add(h2);
+            h1 = h1.wrapping_add(h2);
             h1 = h1.wrapping_mul(5).wrapping_add(0x52dce729);
 
             k2 = k2.wrapping_mul(C2);
@@ -96,7 +96,7 @@ pub fn unsafe_murmur_hash3(key: *const u8, len: usize, seed: u32) -> u128 {
             h2 ^= k2;
 
             h2 = rotl(h2, 31);
-            h2.wrapping_add(h1);
+            h2 = h2.wrapping_add(h1);
             h2 = h2.wrapping_mul(5).wrapping_add(0x38495ab5);
         }
 
@@ -197,11 +197,28 @@ mod tests {
             return format!("{:08x}{:08x}{:08x}{:08x}", hash0, hash1, hash2, hash3);
         }
 
-        let test_vectors: Vec<TestVector> = vec![TestVector {
-            seed: 123,
-            data: b"",
-            hash: "4cd9597081679d1abd92f8784bace33d",
-        }];
+        let test_vectors: Vec<TestVector> = vec![
+            TestVector {
+                seed: 123,
+                data: b"",
+                hash: "4cd9597081679d1abd92f8784bace33d",
+            },
+            TestVector {
+                seed: 123,
+                data: b"Hello, world!",
+                hash: "8743acad421c8c73d373c3f5f19732fd",
+            },
+            TestVector {
+                seed: 321,
+                data: b"Hello, world!",
+                hash: "f86d4004ca47f42bb9546c7979200aee",
+            },
+            TestVector {
+                seed: 123,
+                data: b"xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                hash: "becf7e04dbcf74637751664ef66e73e0",
+            },
+        ];
 
         for test in test_vectors.iter() {
             let data = test.data.as_ptr();
