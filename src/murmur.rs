@@ -10,7 +10,7 @@ use std::mem;
 pub struct Murmur3Hash(u128);
 
 impl Murmur3Hash {
-    fn new(hash: u128) -> Murmur3Hash {
+    pub fn new(hash: u128) -> Murmur3Hash {
         Murmur3Hash(hash)
     }
 

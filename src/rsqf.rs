@@ -33,11 +33,6 @@ pub struct RSQF {
     blocks: Vec<Block>,
 }
 
-/// The type which is used as the key in this structure.  The code is written and optimized for
-/// a 64-bit hash.  Any other type could be used but the caller is responsible for implementing
-/// a consistent hash function which produces 64-bit outputs.  MurmurHash is a good choice.
-type HashKey = u64;
-
 /// Standard filter result type, on success returns a count on error returns a message
 /// This should probably be richer over time
 type FilterResult = Result<usize, &'static str>;
@@ -145,6 +140,7 @@ impl RSQF {
 #[cfg(test)]
 mod tests {
     use super::RSQF;
+    use murmur::Murmur3Hash;
 
     #[test]
     fn creates_empty_filter() {
@@ -179,6 +175,6 @@ mod tests {
     fn get_count_nonexistent_item_returns_zero() {
         let filter = RSQF::new(10000, 9);
 
-        assert_eq!(0, filter.get_count(1));
+        assert_eq!(0, filter.get_count(Murmur3Hash::new(1)));
     }
 }
