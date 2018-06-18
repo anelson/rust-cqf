@@ -53,6 +53,15 @@ impl<'a> Murmur3 for &'a [u8] {
     }
 }
 
+impl<'a> Murmur3 for &'a str {
+    #[inline]
+    fn compute_murmur3(&self, seed: u32) -> Murmur3Hash {
+        let data = self.as_ptr();
+
+        compute_murmur3(data, self.len(), seed)
+    }
+}
+
 /// Work around limitations in the Rust type system while avoiding repetition by using macros to
 /// generate a Murmur implementation for the various integer types
 macro_rules! impl_murmur3_for_ints {
@@ -387,6 +396,34 @@ mod test_slice_u8 {
                 test.hash,
                 hex_string(test.data.compute_murmur3(test.seed).value128()),
                 "test failed for data with length {}, seed {}",
+                test.data.len(),
+                test.seed
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_slice_str {
+    use super::test_helpers::*;
+    use super::Murmur3;
+    use std::str::from_utf8;
+
+    #[test]
+    fn slice_str_trait_implementation() {
+        let test_vectors = get_test_vectors();
+
+        //In Rust, the string type internally stores the characters as UTF-8 so as long as the
+        //strings are using the ASCII characters it should match exactly with the test vectors
+        //which were generated using C code with ASCII text
+        for test in test_vectors.iter() {
+            let test_string = from_utf8(test.data).unwrap();
+
+            assert_eq!(
+                test.hash,
+                hex_string(test_string.compute_murmur3(test.seed).value128()),
+                "test failed for data \"{}\", with length {}, seed {}",
+                test_string,
                 test.data.len(),
                 test.seed
             );
