@@ -1,3 +1,4 @@
+use murmur::Murmur3Hash;
 use std::vec::Vec;
 
 const BITS_PER_SLOT: usize = 9; //corresponds to false positive rate of 1/512
@@ -59,7 +60,7 @@ impl RSQF {
     /// `hash` has been inserted.  Note that this is approximate; it is possible that `hash` is
     /// actually not present but a non-zero count is returned, with a probability no worse than
     /// `2^-r`
-    pub fn get_count(&self, hash: HashKey) -> usize {
+    pub fn get_count(&self, hash: Murmur3Hash) -> usize {
         panic!("NYI");
     }
 
@@ -72,7 +73,7 @@ impl RSQF {
     ///
     /// Returns the new total count of `hash` on success, or `Err` if the filter is already at max
     /// capacity
-    pub fn add_count(&self, hash: HashKey, count: usize) -> FilterResult {
+    pub fn add_count(&self, hash: Murmur3Hash, count: usize) -> FilterResult {
         panic!("NYI");
     }
 
@@ -83,7 +84,7 @@ impl RSQF {
     ///
     /// Returns the new total count of `hash` on success, or `Err` if the filter is already at max
     /// capacity
-    pub fn inc_count(&self, hash: HashKey) -> FilterResult {
+    pub fn inc_count(&self, hash: Murmur3Hash) -> FilterResult {
         return self.add_count(hash, 1);
     }
 
@@ -98,11 +99,11 @@ impl RSQF {
     ///
     /// Returns the new total count of `hash` on success, which may be 0 in which case `hash` has
     /// been removed from the filter, or an error if `hash` was not found in the filter
-    pub fn sub_count(&self, hash: HashKey, count: usize) -> FilterResult {
+    pub fn sub_count(&self, hash: Murmur3Hash, count: usize) -> FilterResult {
         panic!("NYI");
     }
 
-    pub fn dec_count(&self, hash: HashKey) -> FilterResult {
+    pub fn dec_count(&self, hash: Murmur3Hash) -> FilterResult {
         return self.sub_count(hash, 1);
     }
 
