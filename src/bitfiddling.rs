@@ -1,5 +1,10 @@
 //! Contains routines that perform various kinds of bit fiddling operations used by RSQF
 //! Using the power of Rust intrinsics, will use advanced SIMD instructions where available
+//!
+//! TODO: Currently implemented only in terms of x86_64 intrinsics.  Still need to implement
+//! fall-back in processor-neutral Rust and possibly other processor-specific implementations
+
+// If this is an x86-64 CPU target bring in the x86-64 intrinsics
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
@@ -79,6 +84,64 @@ pub fn popcntv(val: u64, start_bit: u64) -> u64 {
 fn popcnt_x86_64(val: u64) -> u64 {
     unsafe{
         _popcnt64(val as i64) as u64
+    }
+}
+
+/// Performs a reverse bit scan, finding the index of the highest set bit.
+///
+/// #Returns
+/// 
+/// `None` if the value has no set bits (that is, if `val` is 0), or the 0-based index of the
+/// highest set bit
+///
+/// # Examples
+///
+/// ```
+/// extern crate cqf;
+///
+/// use cqf::bitfiddling::*;
+///
+/// assert_eq!(None, bit_scan_reverse(0));
+/// assert_eq!(Some(0), bit_scan_reverse(0b01_u64));
+/// assert_eq!(Some(1), bit_scan_reverse(0b11_u64));
+/// assert_eq!(Some(63), bit_scan_reverse(0xffff_ffff_ffff_ffff_u64));
+/// ```
+#[inline]
+pub fn bit_scan_reverse(val: u64) -> Option<u64> {
+    if val != 0 {
+        Some(63 - val.leading_zeros() as u64)
+    } else {
+        None
+    }
+}
+
+/// Finds the index of the lowest set bit in the value
+///
+/// #Returns
+/// 
+/// `None` if the value has no set bits (that is, if `val` is 0), or the 0-based index of the
+/// lowest set bit
+///
+/// # Examples
+///
+/// ```
+/// extern crate cqf;
+///
+/// use cqf::bitfiddling::*;
+///
+/// assert_eq!(None, bit_scan_forward(0));
+/// assert_eq!(Some(0), bit_scan_forward(0x01_u64));
+/// assert_eq!(Some(0), bit_scan_forward(0x11_u64));
+/// assert_eq!(Some(0), bit_scan_forward(0xffff_ffff_ffff_ffff_u64));
+/// assert_eq!(Some(0), bit_scan_forward(0b1111_1111_1111_0000_1111));
+/// assert_eq!(Some(1), bit_scan_forward(0b1111_1111_1111_0000_1110));
+/// ```
+#[inline]
+pub fn bit_scan_forward(val: u64) -> Option<u64> {
+    if val != 0 {
+        Some(val.trailing_zeros() as u64)
+    } else {
+        None
     }
 }
 
@@ -188,6 +251,24 @@ mod test {
         }
     }
 
+    #[test]
+    fn test_bit_scan_forward() {
+        assert_eq!(None, bit_scan_forward(0));
+        assert_eq!(Some(0), bit_scan_forward(0x01));
+        assert_eq!(Some(1), bit_scan_forward(0x01_u64 << 1));
+        assert_eq!(Some(5), bit_scan_forward(0x01_u64 << 5));
+        assert_eq!(Some(9), bit_scan_forward(0x01_u64 << 9));
+        assert_eq!(Some(33), bit_scan_forward(0x01_u64 << 33));
+        assert_eq!(Some(63), bit_scan_forward(0x01_u64 << 63)); 
+                   }
+
+
+    #[test]
+    fn test_bit_scan_reverse() {
+        assert_eq!(Some(0), bit_scan_reverse(0b01_u64));
+        assert_eq!(Some(1), bit_scan_reverse(0b11_u64));
+        assert_eq!(Some(63), bit_scan_reverse(0xffff_ffff_ffff_ffff_u64));
+    }
 
     #[test]
     fn test_bitselect() {
