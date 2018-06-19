@@ -47,7 +47,8 @@ macro_rules! bitmask {
 /// ```
 #[inline]
 pub fn popcnt(val: u64) -> u64 {
-    popcnt_x86_64(val)
+    //popcnt_x86_64(val)
+    val.count_ones() as u64
 }
 
 /// Computes the `popcnt` bit count operation, but skips the first `start_bit` bits in the value
@@ -57,16 +58,16 @@ pub fn popcnt(val: u64) -> u64 {
 ///
 /// ```
 /// extern crate cqf;
-/// use cqf::bitfiddling::popcntv;
+/// use cqf::bitfiddling::popcnt_skip_n;
 ///
-/// assert_eq!(0, popcntv(0b0011, 2));
-/// assert_eq!(64, popcntv(0xffff_ffff_ffff_ffff_u64, 0));
-/// assert_eq!(63, popcntv(0xffff_ffff_ffff_ffff_u64, 1));
-/// assert_eq!(1, popcntv(0xffff_ffff_ffff_ffff_u64, 63));
-/// assert_eq!(0, popcntv(0xffff_ffff_ffff_ffff_u64, 64));
+/// assert_eq!(0, popcnt_skip_n(0b0011, 2));
+/// assert_eq!(64, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 0));
+/// assert_eq!(63, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 1));
+/// assert_eq!(1, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 63));
+/// assert_eq!(0, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 64));
 /// ```
 #[inline]
-pub fn popcntv(val: u64, start_bit: u64) -> u64 {
+pub fn popcnt_skip_n(val: u64, start_bit: u64) -> u64 {
     assert!(start_bit <= 64);
     if start_bit < 64 {
         //Simply mask out the first start_bit bits
@@ -79,10 +80,33 @@ pub fn popcntv(val: u64, start_bit: u64) -> u64 {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "popcnt"))]
+/// Counts the number of set bits up to a certain bit position
+/// Like the opposite of `popcnt_skip_n`
+///
+///#Examples
+///
+/// ```
+/// extern crate cqf;
+/// use cqf::bitfiddling::popcnt_first_n;
+///
+/// assert_eq!(2, popcnt_first_n(0b0011, 2));
+/// assert_eq!(2, popcnt_first_n(0b0011, 63));
+/// assert_eq!(1, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 0));
+/// assert_eq!(2, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 1));
+/// assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 63));
+/// assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 64));
+/// ```
 #[inline]
-fn popcnt_x86_64(val: u64) -> u64 {
-    unsafe { _popcnt64(val as i64) as u64 }
+pub fn popcnt_first_n(val: u64, end_bit: u64) -> u64 {
+    assert!(end_bit <= 64);
+    //Pretty easy, just mask val so only the first end_bit bits (inclusive)
+    //are set
+    if end_bit < 63 {
+        let mask = (2u64 << end_bit) - 1;
+        popcnt(val & mask)
+    } else {
+        popcnt(val)
+    }
 }
 
 /// Performs a reverse bit scan, finding the index of the highest set bit.
@@ -144,7 +168,7 @@ pub fn bit_scan_forward(val: u64) -> Option<u64> {
 }
 
 /// Returns the position of the rank'th 1.  (rank = 0 returns the 1st 1)
-/// Returns 64 if there are fewer than rank+1 1s.
+/// Returns None if there are fewer than rank+1 1s.
 ///
 /// # Examples:
 ///
@@ -154,20 +178,26 @@ pub fn bit_scan_forward(val: u64) -> Option<u64> {
 ///
 /// let val = 0b_1000_1111_0001u64;
 ///
-/// assert_eq!(0, bitselect(val, 0)); //0th 1 bit is at position 0
-/// assert_eq!(4, bitselect(val, 1)); //1st 1 bit is at position 4
-/// assert_eq!(5, bitselect(val, 2)); //2nd 1 bit is at position 5
-/// assert_eq!(6, bitselect(val, 3)); //3rd 1 bit is at position 6
-/// assert_eq!(7, bitselect(val, 4)); //4th 1 bit is at position 7
-/// assert_eq!(11, bitselect(val, 5)); //4th 1 bit is at position 11
-/// assert_eq!(64, bitselect(val, 6)); // Note the surprisng return value, '64' means the bit of the specified rank was not found
-/// assert_eq!(64, bitselect(val, 7));
+/// assert_eq!(Some(0), bitselect(val, 0)); //0th 1 bit is at position 0
+/// assert_eq!(Some(4), bitselect(val, 1)); //1st 1 bit is at position 4
+/// assert_eq!(Some(5), bitselect(val, 2)); //2nd 1 bit is at position 5
+/// assert_eq!(Some(6), bitselect(val, 3)); //3rd 1 bit is at position 6
+/// assert_eq!(Some(7), bitselect(val, 4)); //4th 1 bit is at position 7
+/// assert_eq!(Some(11), bitselect(val, 5)); //4th 1 bit is at position 11
+/// assert_eq!(None, bitselect(val, 6)); // Note the surprisng return value, '64' means the bit of the specified rank was not found
+/// assert_eq!(None, bitselect(val, 7));
 /// // ...
-/// assert_eq!(64, bitselect(val, 63));
+/// assert_eq!(None, bitselect(val, 63));
 /// ```
 #[inline]
-pub fn bitselect(val: u64, rank: u64) -> u64 {
-    bitselect_x86_64_bmi2(val, rank)
+pub fn bitselect(val: u64, rank: u64) -> Option<u64> {
+    let pos = bitselect_x86_64_bmi2(val, rank);
+
+    if pos != 64 {
+        Some(pos)
+    } else {
+        None
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "bmi2", target_feature = "bmi1"))]
@@ -227,25 +257,50 @@ mod test {
     }
 
     #[test]
-    fn test_popcntv() {
-        assert_eq!(0, popcntv(0b000000, 0));
-        assert_eq!(1, popcntv(0b000001, 0));
-        assert_eq!(0, popcntv(0b000001, 1));
-        assert_eq!(1, popcntv(0b100000, 0));
-        assert_eq!(1, popcntv(0b100000, 1));
-        assert_eq!(1, popcntv(0b100000, 5));
-        assert_eq!(0, popcntv(0b100000, 6));
-        assert_eq!(2, popcntv(0b100001, 0));
-        assert_eq!(1, popcntv(0b100001, 1));
-        assert_eq!(1, popcntv(0b100001, 5));
-        assert_eq!(0, popcntv(0b100001, 6));
-        assert_eq!(1, popcntv(0xffff_ffff_ffff_ffff_u64, 63));
-        assert_eq!(0, popcntv(0xffff_ffff_ffff_ffff_u64, 64));
+    fn test_popcnt_skip_n() {
+        assert_eq!(0, popcnt_skip_n(0b000000, 0));
+        assert_eq!(1, popcnt_skip_n(0b000001, 0));
+        assert_eq!(0, popcnt_skip_n(0b000001, 1));
+        assert_eq!(1, popcnt_skip_n(0b100000, 0));
+        assert_eq!(1, popcnt_skip_n(0b100000, 1));
+        assert_eq!(1, popcnt_skip_n(0b100000, 5));
+        assert_eq!(0, popcnt_skip_n(0b100000, 6));
+        assert_eq!(2, popcnt_skip_n(0b100001, 0));
+        assert_eq!(1, popcnt_skip_n(0b100001, 1));
+        assert_eq!(1, popcnt_skip_n(0b100001, 5));
+        assert_eq!(0, popcnt_skip_n(0b100001, 6));
+        assert_eq!(1, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 63));
+        assert_eq!(0, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 64));
 
         let k = 0xffff_ffff_ffff_ffff_u64;
 
         for i in 0..64 {
-            assert_eq!(64 - i, popcntv(k, i));
+            assert_eq!(64 - i, popcnt_skip_n(k, i));
+        }
+    }
+
+    #[test]
+    fn test_popcnt_first_n() {
+        assert_eq!(0, popcnt_first_n(0b000000, 0));
+        assert_eq!(1, popcnt_first_n(0b000001, 0));
+        assert_eq!(1, popcnt_first_n(0b000001, 1));
+        assert_eq!(0, popcnt_first_n(0b100000, 0));
+        assert_eq!(0, popcnt_first_n(0b100000, 1));
+        assert_eq!(1, popcnt_first_n(0b100000, 5));
+        assert_eq!(1, popcnt_first_n(0b100000, 6));
+        assert_eq!(1, popcnt_first_n(0b100001, 0));
+        assert_eq!(1, popcnt_first_n(0b100001, 1));
+        assert_eq!(1, popcnt_first_n(0b100001, 2));
+        assert_eq!(1, popcnt_first_n(0b100001, 4));
+        assert_eq!(2, popcnt_first_n(0b100001, 5));
+        assert_eq!(2, popcnt_first_n(0b100001, 6));
+        assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 63));
+        assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 64));
+
+        let k = 0xffff_ffff_ffff_ffff_u64;
+
+        for i in 0..64 {
+            assert_eq!(i + 1, popcnt_first_n(k, i));
         }
     }
 
@@ -269,9 +324,9 @@ mod test {
 
     #[test]
     fn test_bitselect() {
-        assert_eq!(bitselect(0x0, 0), 64);
-        assert_eq!(bitselect(0b100010, 0), 1);
-        assert_eq!(bitselect(0b100010, 1), 5);
-        assert_eq!(bitselect(0b100010, 2), 64);
+        assert_eq!(None, bitselect(0x0, 0));
+        assert_eq!(Some(1), bitselect(0b100010, 0));
+        assert_eq!(Some(5), bitselect(0b100010, 1));
+        assert_eq!(None, bitselect(0b100010, 2));
     }
 }
