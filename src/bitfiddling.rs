@@ -51,8 +51,8 @@ pub fn popcnt(val: u64) -> u64 {
     val.count_ones() as u64
 }
 
-/// Computes the `popcnt` bit count operation, but skips the first `start_bit` bits in the value
-/// before starting the count.
+/// Computes the `popcnt` bit count operation, but skips the first `skip_bits` bits in the value
+/// before starting the count.  If `skip_bits` is 0, this is equivalent to `popcnt`
 ///
 /// # Examples
 ///
@@ -67,11 +67,11 @@ pub fn popcnt(val: u64) -> u64 {
 /// assert_eq!(0, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 64));
 /// ```
 #[inline]
-pub fn popcnt_skip_n(val: u64, start_bit: u64) -> u64 {
-    assert!(start_bit <= 64);
-    if start_bit < 64 {
-        //Simply mask out the first start_bit bits
-        let mask = !bitmask!(start_bit);
+pub fn popcnt_skip_n(val: u64, skip_bits: u64) -> u64 {
+    assert!(skip_bits <= 64);
+    if skip_bits < 64 {
+        //Simply mask out the first skip_bits bits
+        let mask = !bitmask!(skip_bits);
         popcnt(val & mask)
     } else {
         //If this 64-bit integer has any bits set after the first 64, it's a most unusual integer
@@ -81,7 +81,9 @@ pub fn popcnt_skip_n(val: u64, start_bit: u64) -> u64 {
 }
 
 /// Counts the number of set bits up to a certain bit position
-/// Like the opposite of `popcnt_skip_n`
+/// Like the opposite of `popcnt_skip_n`, except `end_bit` is INCLUSIVE, so if `end_bit` is 0 then
+/// this tests only the first bit, whereas `popcnt_skip_n` with a `skip_bits` of 0 will not skip
+/// any bits
 ///
 ///#Examples
 ///
@@ -102,7 +104,7 @@ pub fn popcnt_first_n(val: u64, end_bit: u64) -> u64 {
     //Pretty easy, just mask val so only the first end_bit bits (inclusive)
     //are set
     if end_bit < 63 {
-        let mask = (2u64 << end_bit) - 1;
+        let mask = bitmask!(end_bit + 1);
         popcnt(val & mask)
     } else {
         popcnt(val)
@@ -184,7 +186,7 @@ pub fn bit_scan_forward(val: u64) -> Option<u64> {
 /// assert_eq!(Some(6), bitselect(val, 3)); //3rd 1 bit is at position 6
 /// assert_eq!(Some(7), bitselect(val, 4)); //4th 1 bit is at position 7
 /// assert_eq!(Some(11), bitselect(val, 5)); //4th 1 bit is at position 11
-/// assert_eq!(None, bitselect(val, 6)); // Note the surprisng return value, '64' means the bit of the specified rank was not found
+/// assert_eq!(None, bitselect(val, 6));
 /// assert_eq!(None, bitselect(val, 7));
 /// // ...
 /// assert_eq!(None, bitselect(val, 63));
@@ -198,6 +200,27 @@ pub fn bitselect(val: u64, rank: u64) -> Option<u64> {
     } else {
         None
     }
+}
+
+/// Finds the position of the rank-th bit in a word, skipping `skip_bits` bits first.
+/// If `skip_bits` is 0, this is equivalent to `bitselect`
+/// Returns None if there are fewer than rank+1 1s after `skip_bits`.
+///
+/// # Examples:
+///
+/// ```
+/// extern crate cqf;
+/// use cqf::bitfiddling::*;
+///
+/// let val = 0b_1000_1111_0001u64;
+///
+/// assert_eq!(Some(0), bitselect_skip_n(val, 0, 0));
+/// assert_eq!(Some(4), bitselect_skip_n(val, 0, 1));
+/// assert_eq!(None, bitselect_skip_n(val, 0, 12));
+/// ```
+#[inline]
+pub fn bitselect_skip_n(val: u64, rank: u64, skip_bits: u64) -> Option<u64> {
+    bitselect(val & !bitmask!(skip_bits), rank)
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "bmi2", target_feature = "bmi1"))]
@@ -328,5 +351,22 @@ mod test {
         assert_eq!(Some(1), bitselect(0b100010, 0));
         assert_eq!(Some(5), bitselect(0b100010, 1));
         assert_eq!(None, bitselect(0b100010, 2));
+    }
+
+    #[test]
+    fn test_bitselect_skip_n() {
+        assert_eq!(None, bitselect_skip_n(0x0, 0, 0));
+        assert_eq!(Some(1), bitselect_skip_n(0b100010, 0, 0));
+        assert_eq!(Some(1), bitselect_skip_n(0b100010, 0, 1));
+        assert_eq!(Some(5), bitselect_skip_n(0b100010, 0, 2));
+        assert_eq!(Some(5), bitselect_skip_n(0b100010, 1, 0));
+        assert_eq!(None, bitselect_skip_n(0b100010, 2, 0));
+        assert_eq!(None, bitselect_skip_n(0b100010, 1, 2));
+
+        let val = 0b_1000_1111_0001u64;
+
+        assert_eq!(Some(0), bitselect_skip_n(val, 0, 0));
+        assert_eq!(Some(4), bitselect_skip_n(val, 0, 1));
+        assert_eq!(None, bitselect_skip_n(val, 0, 12));
     }
 }
