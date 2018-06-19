@@ -192,7 +192,8 @@ unsafe fn read_partial_u64(data: *const u8, len: usize) -> u64 {
         5 => read_u32_as_u64(data) | read_u8_as_u64(data.offset(4)) << 32,
         6 => read_u32_as_u64(data) | read_u16_as_u64(data.offset(4)) << 32,
         7 => {
-            read_u32_as_u64(data) | read_u16_as_u64(data.offset(4)) << 32
+            read_u32_as_u64(data)
+                | read_u16_as_u64(data.offset(4)) << 32
                 | read_u8_as_u64(data.offset(6)) << 48
         }
         _ => read_u64_as_u64(data),

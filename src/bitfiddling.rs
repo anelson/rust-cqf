@@ -20,16 +20,16 @@ use std::arch::x86_64::*;
 /// assert_eq!(0b011111, bitmask!(5));
 /// ```
 macro_rules! bitmask {
-    ($bits:expr) => (
-        {
-            assert!($bits <= 64);
+    ($bits:expr) => {{
+        assert!($bits <= 64);
 
-            if $bits == 64 { 0xffff_ffff_ffff_ffff_u64 }
-            else { 1_u64.wrapping_shl(($bits)as u32) - 1_u64 }
+        if $bits == 64 {
+            0xffff_ffff_ffff_ffff_u64
+        } else {
+            1_u64.wrapping_shl(($bits) as u32) - 1_u64
         }
-    )
+    }};
 }
-
 
 /// Given a 64-bit integer, returns the number of bits set to 1
 ///
@@ -54,7 +54,7 @@ pub fn popcnt(val: u64) -> u64 {
 /// before starting the count.
 ///
 /// # Examples
-/// 
+///
 /// ```
 /// extern crate cqf;
 /// use cqf::bitfiddling::popcntv;
@@ -69,8 +69,8 @@ pub fn popcnt(val: u64) -> u64 {
 pub fn popcntv(val: u64, start_bit: u64) -> u64 {
     assert!(start_bit <= 64);
     if start_bit < 64 {
-       //Simply mask out the first start_bit bits
-       let mask = !bitmask!(start_bit);
+        //Simply mask out the first start_bit bits
+        let mask = !bitmask!(start_bit);
         popcnt(val & mask)
     } else {
         //If this 64-bit integer has any bits set after the first 64, it's a most unusual integer
@@ -82,15 +82,13 @@ pub fn popcntv(val: u64, start_bit: u64) -> u64 {
 #[cfg(all(target_arch = "x86_64", target_feature = "popcnt"))]
 #[inline]
 fn popcnt_x86_64(val: u64) -> u64 {
-    unsafe{
-        _popcnt64(val as i64) as u64
-    }
+    unsafe { _popcnt64(val as i64) as u64 }
 }
 
 /// Performs a reverse bit scan, finding the index of the highest set bit.
 ///
 /// #Returns
-/// 
+///
 /// `None` if the value has no set bits (that is, if `val` is 0), or the 0-based index of the
 /// highest set bit
 ///
@@ -118,7 +116,7 @@ pub fn bit_scan_reverse(val: u64) -> Option<u64> {
 /// Finds the index of the lowest set bit in the value
 ///
 /// #Returns
-/// 
+///
 /// `None` if the value has no set bits (that is, if `val` is 0), or the 0-based index of the
 /// lowest set bit
 ///
@@ -178,7 +176,7 @@ fn bitselect_x86_64_bmi2(val: u64, rank: u64) -> u64 {
     unsafe {
         // This is a novel (to me) use of the pdep instruction
         // The 'mask' parameter to pdep is actually the value we're interested in
-        // The 'value' is a mask with a '1' bit in the rank-th position. 
+        // The 'value' is a mask with a '1' bit in the rank-th position.
         //
         // We run the pdep instruction, then use tzcnt to count the leading zeros which tells us by
         // how many bits the input value was shifted and thus the rank of the rank-th bit.
@@ -259,9 +257,8 @@ mod test {
         assert_eq!(Some(5), bit_scan_forward(0x01_u64 << 5));
         assert_eq!(Some(9), bit_scan_forward(0x01_u64 << 9));
         assert_eq!(Some(33), bit_scan_forward(0x01_u64 << 33));
-        assert_eq!(Some(63), bit_scan_forward(0x01_u64 << 63)); 
-                   }
-
+        assert_eq!(Some(63), bit_scan_forward(0x01_u64 << 63));
+    }
 
     #[test]
     fn test_bit_scan_reverse() {
