@@ -1,10 +1,10 @@
 use murmur::Murmur3Hash;
 use std::vec::Vec;
 
-const BITS_PER_SLOT: usize = 9; //corresponds to false positive rate of 1/512
-const BLOCK_OFFSET_BITS: usize = (6); //6 seems fastest
-const SLOTS_PER_BLOCK: usize = (1 << BLOCK_OFFSET_BITS);
-const METADATA_WORDS_PER_BLOCK: usize = ((SLOTS_PER_BLOCK + 63) / 64);
+const BITS_PER_SLOT: usize = 9; //corresponds to false positive rate of 1/(2^9) == 1/512
+const BLOCK_OFFSET_BITS: usize = (6); //6 seems fastest; corresponds to max offset 2^6-1 or 63
+const SLOTS_PER_BLOCK: usize = (1 << BLOCK_OFFSET_BITS); //64 currently
+const METADATA_WORDS_PER_BLOCK: usize = ((SLOTS_PER_BLOCK + 63) / 64); //64 bits per word
 
 #[allow(dead_code)] // for now
 struct Block {
