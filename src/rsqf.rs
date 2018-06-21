@@ -41,13 +41,124 @@ type FilterResult = Result<usize, &'static str>;
 
 #[allow(dead_code)] // for now
 #[allow(unused_variables)] // for now
-impl RSQF {
-    pub fn new(n: usize, rbits: u8) -> RSQF {
+impl Metadata {
+    /// Creates a metadata structure for the filter based on `n` the number of expected elements
+    /// and `rbits` which specifies the false positive rate at `1/(2^rbits - 1)`
+    fn from_n_and_r(n: usize, rbits: u8) -> Metadata {
         assert!(SLOTS_PER_BLOCK == 64usize); //this code assumes 64 slots per block always
         assert!(rbits as usize == BITS_PER_SLOT); //TODO: figure out how to make this configurable
-        let meta = RSQF::calculate_metadata(n, rbits);
+
+        let qbits = Metadata::calculate_qbits(n, rbits);
+        let total_slots = 1usize << qbits; //2^qbits slots in the filter
+        let nblocks = (total_slots + SLOTS_PER_BLOCK - 1) / SLOTS_PER_BLOCK;
+
+        //Conservatively, set the maximum number of elements to 95% of the total capacity
+        //Realistically this structure can go higher than that but there starts to be a performance
+        //penalty and it's better to resize at that point
+        let max_slots = ((total_slots as f64) * 0.95) as usize;
+
+        return Metadata {
+            n,
+            rbits,
+            qbits,
+            nblocks,
+            max_slots,
+            nslots: total_slots,
+            ..Default::default()
+        };
+    }
+
+    /// Given the insert count `n` and the remainder bits `rbits`, calculates the quotient size
+    /// `qbits` which will provide a false positive rate of no worse than `1/(2^rbits - 1)`
+    fn calculate_qbits(n: usize, rbits: u8) -> u8 {
+        assert!(rbits > 1);
+        assert!(n > 0);
+
+        let sigma = 2.0f64.powi(-(rbits as i32));
+        let p = ((n as f64) / sigma).log2().ceil() as u8;
+
+        assert!(p > rbits);
+
+        let qbits = p - rbits;
+
+        qbits
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn panics_on_invalid_rbits() {
+        Metadata::from_n_and_r(10000, 8);
+    }
+
+    #[test]
+    fn computes_valid_q_for_n_and_r() {
+        // Test data data values were computed from a Google Sheet using formulae from the RSQF
+        // paper
+        let test_data = [
+            // (n, r, expected_q)
+            (100_000_usize, 6_u8, 17),
+            (1_000_000_usize, 6_u8, 20),
+            (10_000_000_usize, 6_u8, 24),
+            (100_000_usize, 8_u8, 17),
+            (1_000_000_usize, 8_u8, 20),
+            (10_000_000_usize, 8_u8, 24),
+            (100_000_usize, 9_u8, 17),
+            (1_000_000_usize, 9_u8, 20),
+            (10_000_000_usize, 9_u8, 24),
+        ];
+
+        for (n, r, expected_qbits) in test_data.into_iter() {
+            let q = Metadata::calculate_qbits(*n, *r);
+            assert_eq!(*expected_qbits, q, "n={} r={}", *n, *r);
+        }
+    }
+
+    #[test]
+    fn computes_valid_metadata_for_n_and_r() {
+        let test_data = [
+            // (n, r, expected_qbits, expected_nslots)
+            (10_000_usize, 9_u8, 14, 1usize << 14),
+        ];
+
+        for (n, r, expected_qbits, expected_nslots) in test_data.into_iter() {
+            let meta = Metadata::from_n_and_r(*n, *r);
+
+            assert_eq!(meta.n, *n);
+            assert_eq!(meta.rbits, *r);
+            assert_eq!(meta.qbits, *expected_qbits);
+            assert_eq!(meta.nslots, *expected_nslots);
+            assert_eq!(meta.nblocks, (meta.nslots + 64 - 1) / 64);
+            assert_eq!(meta.noccupied_slots, 0);
+            assert_eq!(meta.nelements, 0);
+            assert_eq!(meta.ndistinct_elements, 0);
+            assert_eq!(meta.max_slots, ((meta.nslots as f64) * 0.95) as usize);
+        }
+    }
+}
+
+#[allow(dead_code)] // for now
+#[allow(unused_variables)] // for now
+impl RSQF {
+    pub fn new(n: usize, rbits: u8) -> RSQF {
+        RSQF::from_n_and_r(n, rbits)
+    }
+
+    /// Creates a structure for the filter based on `n` the number of expected elements
+    /// and `rbits` which specifies the false positive rate at `1/(2^rbits - 1)`
+    fn from_n_and_r(n: usize, rbits: u8) -> RSQF {
+        RSQF::from_metadata(Metadata::from_n_and_r(n, rbits))
+    }
+
+    /// Creates an instance of the filter given the description of the filter parameters stored in
+    /// a `Metadata` structure
+    fn from_metadata(meta: Metadata) -> RSQF {
         let blocks = Vec::with_capacity(meta.nblocks);
-        return RSQF { meta, blocks };
+        return RSQF { meta: meta, blocks };
     }
 
     /// Queries the filter for the presence of `hash`.
@@ -104,38 +215,11 @@ impl RSQF {
         return self.sub_count(hash, 1);
     }
 
-    /// Given the insert count `n` and the remainder bits `rbits`, computes the metadata
-    /// for a filter which will have worst-case false positive rate of `2^-rbits`
-    fn calculate_metadata(n: usize, rbits: u8) -> Metadata {
-        assert!(rbits > 1);
-        assert!(n > 0);
-
-        let sigma = 2.0f64.powi(-(rbits as i32));
-        let p = ((n as f64) / sigma).log2().ceil() as u8;
-
-        assert!(p > rbits);
-
-        let qbits = p - rbits;
-
-        let total_slots = 1usize << qbits; //2^qbits slots in the filter
-        let nblocks = (total_slots + SLOTS_PER_BLOCK - 1) / SLOTS_PER_BLOCK;
-
-        //Conservatively, set the maximum number of elements to 95% of the total capacity
-        //Realistically this structure can go higher than that but there starts to be a performance
-        //penalty and it's better to resize at that point
-        let max_slots = ((total_slots as f64) * 0.95) as usize;
-
-        return Metadata {
-            n,
-            rbits,
-            qbits,
-            nblocks,
-            max_slots,
-            nslots: total_slots,
-            ..Default::default()
-        };
-    }
-
+    /// Given a Murmur3 hash as input, extracts the quotient `q` and remainder `r` which will be
+    /// used to look up this item in the filter.
+    ///
+    /// Though both values are of type `u64`, the number of bits used in each is based on the size
+    /// (`n`) and false-positive rate (`rbits`) specified when the filter was created
     fn get_q_and_r(&self, hash: Murmur3Hash) -> (u64, u64) {
         //Use only the 64-bit hash and pull out the bits we'll use for q and r
         let hash = hash.value64();
@@ -150,7 +234,7 @@ impl RSQF {
 }
 
 #[cfg(test)]
-mod tests {
+mod rsqf_tests {
     use super::*;
     use murmur::Murmur3Hash;
 
@@ -194,16 +278,25 @@ mod tests {
     #[test]
     fn get_q_and_r_returns_correct_results() {
         let test_data = [
-            // (qbits, rbits, hash, expected_q, expected_r)
-            (30u8, 9u8, 0x0000_0000u128, 0u64, 0u64),
+            // (n, rbits, hash)
+            (30usize, 9u8, 0x0000_0000u128),
+            (30usize, 9u8, 0b0000_0001_1111_1111u128),
+            (30usize, 9u8, 0b1111_0001_1111_0000u128),
         ];
 
-        for (qbits, rbits, _hash, _expected_q, _expected_r) in test_data.into_iter() {
-            let _meta = Metadata {
-                qbits: *qbits,
-                rbits: *rbits,
-                ..Default::default()
-            };
+        for (n, rbits, hash) in test_data.into_iter() {
+            let filter = RSQF::new(*n, *rbits);
+
+            let hash = Murmur3Hash::new(*hash);
+
+            let (q, r) = filter.get_q_and_r(hash);
+
+            let rbitmask = u128::max_value() >> (128 - *rbits);
+            let qbitmask = u128::max_value() >> (128 - *rbits - filter.meta.qbits) & !rbitmask;
+
+            //The lower rbits bits of the hash should be r
+            assert_eq!(hash.value128() & rbitmask, r as u128);
+            assert_eq!((hash.value128() >> r) & qbitmask, q as u128);
         }
     }
 }
