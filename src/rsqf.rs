@@ -7,6 +7,7 @@ const SLOTS_PER_BLOCK: usize = (1 << BLOCK_OFFSET_BITS); //64 currently
 const METADATA_WORDS_PER_BLOCK: usize = ((SLOTS_PER_BLOCK + 63) / 64); //64 bits per word
 
 #[allow(dead_code)] // for now
+#[derive(Default)]
 struct Block {
     offset: u8,
     occupieds: [u64; METADATA_WORDS_PER_BLOCK],
@@ -15,6 +16,7 @@ struct Block {
 }
 
 #[allow(dead_code)] // for now
+#[derive(Default)]
 struct Metadata {
     n: usize,
     q: u8,
@@ -128,18 +130,28 @@ impl RSQF {
             r,
             q,
             nblocks,
-            nelements: 0,
-            ndistinct_elements: 0,
-            nslots: total_slots,
-            noccupied_slots: 0,
             max_slots,
+            nslots: total_slots,
+            ..Default::default()
         };
+    }
+
+    fn get_q_and_r(&self, hash: Murmur3Hash) -> (u64, u64) {
+        //Use only the 64-bit hash and pull out the bits we'll use for q and r
+        let hash = hash.value64();
+
+        // To compute the quotient q for this hash, shift right to remove the bits to be used as
+        // the remainder r, then mask out q bits
+        let q = (hash.wrapping_shr(self.meta.q as u32)) & bitmask!(self.meta.q);
+        let r = hash & bitmask!(self.meta.r as u32);
+
+        (q, r)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RSQF;
+    use super::*;
     use murmur::Murmur3Hash;
 
     #[test]
@@ -172,9 +184,26 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn get_count_nonexistent_item_returns_zero() {
         let filter = RSQF::new(10000, 9);
 
         assert_eq!(0, filter.get_count(Murmur3Hash::new(1)));
+    }
+
+    #[test]
+    fn get_q_and_r_returns_correct_results() {
+        let test_data = [
+            // (qbits, rbits, hash, expected_q, expected_r)
+            (30u8, 9u8, 0x0000_0000u128, 0u64, 0u64),
+        ];
+
+        for (qbits, rbits, _hash, _expected_q, _expected_r) in test_data.into_iter() {
+            let _meta = Metadata {
+                q: *qbits,
+                r: *rbits,
+                ..Default::default()
+            };
+        }
     }
 }
