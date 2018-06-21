@@ -4,6 +4,8 @@
 //! TODO: Currently implemented only in terms of x86_64 intrinsics.  Still need to implement
 //! fall-back in processor-neutral Rust and possibly other processor-specific implementations
 
+#![macro_use]
+
 // If this is an x86-64 CPU target bring in the x86-64 intrinsics
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -14,11 +16,17 @@ use std::arch::x86_64::*;
 /// # Examples
 ///
 /// ```
+/// # #[macro_use] extern crate cqf;
+/// # fn main() {
+/// use cqf::bitfiddling::popcnt;
+///
 /// assert_eq!(0, bitmask!(0));
 /// assert_eq!(0xffff_ffff_ffff_ffff_u64, bitmask!(64));
 /// assert_eq!(0xffff_ffff_u64, bitmask!(32));
 /// assert_eq!(0b011111, bitmask!(5));
+/// # }
 /// ```
+#[macro_export]
 macro_rules! bitmask {
     ($bits:expr) => {{
         assert!($bits <= 64);
