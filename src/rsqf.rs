@@ -19,8 +19,8 @@ struct Block {
 #[derive(Default)]
 struct Metadata {
     n: usize,
-    q: u8,
-    r: u8,
+    qbits: u8,
+    rbits: u8,
     nblocks: usize,
     nelements: usize,
     ndistinct_elements: usize,
@@ -42,10 +42,10 @@ type FilterResult = Result<usize, &'static str>;
 #[allow(dead_code)] // for now
 #[allow(unused_variables)] // for now
 impl RSQF {
-    pub fn new(n: usize, r: u8) -> RSQF {
+    pub fn new(n: usize, rbits: u8) -> RSQF {
         assert!(SLOTS_PER_BLOCK == 64usize); //this code assumes 64 slots per block always
-        assert!(r as usize == BITS_PER_SLOT); //TODO: figure out how to make this configurable
-        let meta = RSQF::calculate_metadata(n, r);
+        assert!(rbits as usize == BITS_PER_SLOT); //TODO: figure out how to make this configurable
+        let meta = RSQF::calculate_metadata(n, rbits);
         let blocks = Vec::with_capacity(meta.nblocks);
         return RSQF { meta, blocks };
     }
@@ -56,7 +56,7 @@ impl RSQF {
     /// If `hash` is likely to be present, returns an approximate count of the number of times
     /// `hash` has been inserted.  Note that this is approximate; it is possible that `hash` is
     /// actually not present but a non-zero count is returned, with a probability no worse than
-    /// `2^-r`
+    /// `2^-rbits`
     pub fn get_count(&self, hash: Murmur3Hash) -> usize {
         panic!("NYI");
     }
@@ -104,20 +104,20 @@ impl RSQF {
         return self.sub_count(hash, 1);
     }
 
-    /// Given the insert count `n` and the remainder bits `r`, computes the metadata
-    /// for a filter which will have worst-case false positive rate of `2^-r`
-    fn calculate_metadata(n: usize, r: u8) -> Metadata {
-        assert!(r > 1);
+    /// Given the insert count `n` and the remainder bits `rbits`, computes the metadata
+    /// for a filter which will have worst-case false positive rate of `2^-rbits`
+    fn calculate_metadata(n: usize, rbits: u8) -> Metadata {
+        assert!(rbits > 1);
         assert!(n > 0);
 
-        let sigma = 2.0f64.powi(-(r as i32));
+        let sigma = 2.0f64.powi(-(rbits as i32));
         let p = ((n as f64) / sigma).log2().ceil() as u8;
 
-        assert!(p > r);
+        assert!(p > rbits);
 
-        let q = p - r;
+        let qbits = p - rbits;
 
-        let total_slots = 1usize << q; //2^q slots in the filter
+        let total_slots = 1usize << qbits; //2^qbits slots in the filter
         let nblocks = (total_slots + SLOTS_PER_BLOCK - 1) / SLOTS_PER_BLOCK;
 
         //Conservatively, set the maximum number of elements to 95% of the total capacity
@@ -127,8 +127,8 @@ impl RSQF {
 
         return Metadata {
             n,
-            r,
-            q,
+            rbits,
+            qbits,
             nblocks,
             max_slots,
             nslots: total_slots,
@@ -142,8 +142,8 @@ impl RSQF {
 
         // To compute the quotient q for this hash, shift right to remove the bits to be used as
         // the remainder r, then mask out q bits
-        let q = (hash.wrapping_shr(self.meta.q as u32)) & bitmask!(self.meta.q);
-        let r = hash & bitmask!(self.meta.r as u32);
+        let q = (hash.wrapping_shr(self.meta.qbits as u32)) & bitmask!(self.meta.qbits);
+        let r = hash & bitmask!(self.meta.rbits as u32);
 
         (q, r)
     }
@@ -170,8 +170,8 @@ mod tests {
         let filter = RSQF::new(10000, 9);
 
         assert_eq!(filter.meta.n, 10000);
-        assert_eq!(filter.meta.r, 9);
-        assert_eq!(filter.meta.q, 14);
+        assert_eq!(filter.meta.rbits, 9);
+        assert_eq!(filter.meta.qbits, 14);
         assert_eq!(filter.meta.nslots, 1usize << 14);
         assert_eq!(filter.meta.nblocks, (filter.meta.nslots + 64 - 1) / 64);
         assert_eq!(filter.meta.noccupied_slots, 0);
@@ -200,8 +200,8 @@ mod tests {
 
         for (qbits, rbits, _hash, _expected_q, _expected_r) in test_data.into_iter() {
             let _meta = Metadata {
-                q: *qbits,
-                r: *rbits,
+                qbits: *qbits,
+                rbits: *rbits,
                 ..Default::default()
             };
         }
