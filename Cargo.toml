@@ -5,3 +5,5 @@ authors = ["Adam Nelson <anelson@apocryph.org>"]
 
 [dependencies]
 num = "0.1"
+rand = "0.5.2"
+

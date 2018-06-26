@@ -1,10 +1,12 @@
 use murmur::Murmur3Hash;
+use std::mem::size_of;
 use std::vec::Vec;
 
 const BITS_PER_SLOT: usize = 9; //corresponds to false positive rate of 1/(2^9) == 1/512
 const BLOCK_OFFSET_BITS: usize = (6); //6 seems fastest; corresponds to max offset 2^6-1 or 63
 const SLOTS_PER_BLOCK: usize = (1 << BLOCK_OFFSET_BITS); //64 currently
-const METADATA_WORDS_PER_BLOCK: usize = ((SLOTS_PER_BLOCK + 63) / 64); //64 bits per word
+const BLOCK_WORD_SIZE: usize = size_of::<u64>() * 8; //64 bits
+const METADATA_WORDS_PER_BLOCK: usize = ((SLOTS_PER_BLOCK + BLOCK_WORD_SIZE - 1) / BLOCK_WORD_SIZE); //64 bits per word
 
 #[allow(dead_code)] // for now
 pub struct RSQF {
@@ -16,8 +18,8 @@ pub struct RSQF {
 #[derive(Default, PartialEq)]
 struct Metadata {
     n: usize,
-    qbits: u8,
-    rbits: u8,
+    qbits: usize,
+    rbits: usize,
     nblocks: usize,
     nelements: usize,
     ndistinct_elements: usize,
@@ -36,6 +38,7 @@ struct LogicalData {
 #[derive(Default, PartialEq)]
 struct PhysicalData {
     blocks: Vec<Block>,
+    rbits: usize,
 }
 
 #[allow(dead_code)] // for now
@@ -54,13 +57,13 @@ type FilterResult = Result<usize, &'static str>;
 #[allow(dead_code)] // for now
 #[allow(unused_variables)] // for now
 impl RSQF {
-    pub fn new(n: usize, rbits: u8) -> RSQF {
+    pub fn new(n: usize, rbits: usize) -> RSQF {
         RSQF::from_n_and_r(n, rbits)
     }
 
     /// Creates a structure for the filter based on `n` the number of expected elements
     /// and `rbits` which specifies the false positive rate at `1/(2^rbits - 1)`
-    fn from_n_and_r(n: usize, rbits: u8) -> RSQF {
+    fn from_n_and_r(n: usize, rbits: usize) -> RSQF {
         RSQF::from_metadata(Metadata::from_n_and_r(n, rbits))
     }
 
@@ -190,9 +193,9 @@ mod rsqf_tests {
     fn get_q_and_r_returns_correct_results() {
         let test_data = [
             // (n, rbits, hash)
-            (30usize, 9u8, 0x0000_0000u128),
-            (30usize, 9u8, 0b0000_0001_1111_1111u128),
-            (30usize, 9u8, 0b1111_0001_1111_0000u128),
+            (30usize, 9usize, 0x0000_0000u128),
+            (30usize, 9usize, 0b0000_0001_1111_1111u128),
+            (30usize, 9usize, 0b1111_0001_1111_0000u128),
         ];
 
         for (n, rbits, hash) in test_data.into_iter() {
@@ -225,7 +228,7 @@ mod rsqf_tests {
 impl Metadata {
     /// Creates a metadata structure for the filter based on `n` the number of expected elements
     /// and `rbits` which specifies the false positive rate at `1/(2^rbits - 1)`
-    fn from_n_and_r(n: usize, rbits: u8) -> Metadata {
+    fn from_n_and_r(n: usize, rbits: usize) -> Metadata {
         assert!(SLOTS_PER_BLOCK == 64usize); //this code assumes 64 slots per block always
         assert!(rbits as usize == BITS_PER_SLOT); //TODO: figure out how to make this configurable
 
@@ -251,12 +254,12 @@ impl Metadata {
 
     /// Given the insert count `n` and the remainder bits `rbits`, calculates the quotient size
     /// `qbits` which will provide a false positive rate of no worse than `1/(2^rbits - 1)`
-    fn calculate_qbits(n: usize, rbits: u8) -> u8 {
+    fn calculate_qbits(n: usize, rbits: usize) -> usize {
         assert!(rbits > 1);
         assert!(n > 0);
 
         let sigma = 2.0f64.powi(-(rbits as i32));
-        let p = ((n as f64) / sigma).log2().ceil() as u8;
+        let p = ((n as f64) / sigma).log2().ceil() as usize;
 
         assert!(p > rbits);
 
@@ -282,15 +285,15 @@ mod metadata_tests {
         // paper
         let test_data = [
             // (n, r, expected_q)
-            (100_000_usize, 6_u8, 17),
-            (1_000_000_usize, 6_u8, 20),
-            (10_000_000_usize, 6_u8, 24),
-            (100_000_usize, 8_u8, 17),
-            (1_000_000_usize, 8_u8, 20),
-            (10_000_000_usize, 8_u8, 24),
-            (100_000_usize, 9_u8, 17),
-            (1_000_000_usize, 9_u8, 20),
-            (10_000_000_usize, 9_u8, 24),
+            (100_000_usize, 6_usize, 17),
+            (1_000_000_usize, 6_usize, 20),
+            (10_000_000_usize, 6_usize, 24),
+            (100_000_usize, 8_usize, 17),
+            (1_000_000_usize, 8_usize, 20),
+            (10_000_000_usize, 8_usize, 24),
+            (100_000_usize, 9_usize, 17),
+            (1_000_000_usize, 9_usize, 20),
+            (10_000_000_usize, 9_usize, 24),
         ];
 
         for (n, r, expected_qbits) in test_data.into_iter() {
@@ -303,7 +306,7 @@ mod metadata_tests {
     fn computes_valid_metadata_for_n_and_r() {
         let test_data = [
             // (n, r, expected_qbits, expected_nslots)
-            (10_000_usize, 9_u8, 14, 1usize << 14),
+            (10_000_usize, 9_usize, 14, 1usize << 14),
         ];
 
         for (n, r, expected_qbits, expected_nslots) in test_data.into_iter() {
@@ -325,7 +328,7 @@ mod metadata_tests {
 impl LogicalData {
     fn new(meta: &Metadata) -> LogicalData {
         LogicalData {
-            physical: PhysicalData::new(meta.nslots),
+            physical: PhysicalData::new(meta.nslots, meta.rbits),
             ..Default::default()
         }
     }
@@ -335,11 +338,11 @@ impl LogicalData {
 mod logicaldata_tests {}
 
 impl PhysicalData {
-    fn new(nblocks: usize) -> PhysicalData {
+    fn new(nblocks: usize, rbits: usize) -> PhysicalData {
         // Allocate a vector of Block structures.  Because of how this structure will be used,
         // the contents should be populated in advance
         let blocks = vec![Default::default(); nblocks];
-        PhysicalData { blocks }
+        PhysicalData { blocks, rbits }
     }
 }
 
@@ -349,9 +352,283 @@ mod physical_data_tests {
 
     #[test]
     fn creates_blocks() {
-        let pd = PhysicalData::new(10);
+        let pd = PhysicalData::new(10, BITS_PER_SLOT);
 
         assert_eq!(pd.blocks.len(), 10);
         assert_eq!(pd.blocks[0], Default::default());
+    }
+}
+
+impl Block {
+    /// Gets the offset of this block; that is, the slot offset at which this block is located.
+    /// Each block contains 64 slots, with the slot number stored only every 64th slot as an
+    /// optimization.
+    ///
+    /// This block stores the 64 slots corresponding to the slots at `offset()` to `offset() + 63`.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn offset() -> u64 {
+        //TODO: Not sure this can be implemented at the Block level; the C code computes this using
+        //knowledge of adjacent blocks
+        panic!("NYI");
+    }
+
+    /// Given the 0-based `relative_index` of a slot in this block, returns the value stored in
+    /// that slot.  Note that the return type is `u64` but the actual range of possible values is
+    /// determined by the parameter `rbits` which is typically on the order of 8 or 9
+    #[inline]
+    #[allow(dead_code)] // Just for now until higher level modules call this
+    pub fn get_slot(&self, rbits: usize, relative_index: u64) -> u64 {
+        let (slot_word_index, slot_bit_offset_in_word, bits_in_first_word, bits_in_second_word) =
+            self.find_slot(rbits, relative_index);
+        let rbits = rbits as u64;
+
+        //Each block contains SLOTS_PER_BLOCK slots where each slot is rbits bits long.  The slots
+        //are stored in an array of u64 words.  If rbits is an integer divisor of SLOTS_PER_BLOCK
+        //then slots cannot span multiple words, but rbits is a runtime parameter so that can't be
+        //assumed.
+        //
+        //Therefore when attempting to read a slot value there are two possible cases:
+        //* slot is entirely within a single word
+        //* slot starts on one word and ends on another
+        if bits_in_second_word == 0 {
+            //All of the slot is in one word; this statistically is the more common case
+            (self.slots[slot_word_index as usize] >> slot_bit_offset_in_word) & bitmask!(rbits)
+        } else {
+            //This slot starts on one word and ends on the following word so extract both pieces
+            //then put them together
+            //If a slot spans two words, we know the the part of the slot's value in the second
+            //word starts at bit 0 in that word, so unlike for the first part which requires a bit
+            //shift and then a bit mask, the second part can be obtained with just a bit mask
+            let first_part = (self.slots[slot_word_index as usize] >> slot_bit_offset_in_word)
+                & bitmask!(bits_in_first_word);
+            let second_part =
+                self.slots[slot_word_index as usize + 1] & bitmask!(bits_in_second_word);
+
+            first_part | (second_part << bits_in_first_word)
+        }
+    }
+
+    /// Sets the value of the slot at `relative_index` to `val`.  Note the type of `val` is `u64`
+    /// but its the `rbits` parameter that determines how many bits are actually stored in the slot
+    #[inline]
+    #[allow(dead_code)] // Just for now until higher level modules call this
+    pub fn set_slot(&mut self, rbits: usize, relative_index: u64, val: u64) -> () {
+        let (slot_word_index, slot_bit_offset_in_word, bits_in_first_word, bits_in_second_word) =
+            self.find_slot(rbits, relative_index);
+
+        println!(
+            "index {:x}, offset {:x}, bits ({}, {})",
+            slot_word_index, slot_bit_offset_in_word, bits_in_first_word, bits_in_second_word
+        );
+        if bits_in_second_word == 0 {
+            //This slot is entirely contained within one word
+            let old_word = self.slots[slot_word_index as usize];
+            let slot_bitmask = bitmask!(rbits) << slot_bit_offset_in_word;
+            let new_word =
+                (old_word & !slot_bitmask) | ((val << slot_bit_offset_in_word) & slot_bitmask);
+
+            println!(
+                "single word at 0x{:x} changing from {:08x} to {:08x}",
+                slot_word_index, old_word, new_word
+            );
+
+            self.slots[slot_word_index as usize] = new_word;
+        } else {
+            //This slot starts on one word and ends on the following word so extract both pieces
+            //and then put them in the two words
+
+            //If a slot spans two words, we know the the part of the slot's value in the second
+            //word starts at bit 0 in that word, so unlike for the first part which requires a bit
+            //shift and then a bit mask, the second part can be obtained with just a bit mask
+            let old_word = self.slots[slot_word_index as usize];
+            let slot_bitmask = bitmask!(bits_in_first_word) << slot_bit_offset_in_word;
+            let new_word =
+                (old_word & !slot_bitmask) | ((val << slot_bit_offset_in_word) & slot_bitmask);
+
+            println!(
+                "first word at 0x{:x} changing from {:08x} to {:08x}",
+                slot_word_index, old_word, new_word
+            );
+            self.slots[slot_word_index as usize] = new_word;
+
+            let old_word = self.slots[slot_word_index as usize + 1];
+            let slot_bitmask = bitmask!(bits_in_second_word);
+            let new_word =
+                (old_word & !slot_bitmask) | ((val >> bits_in_first_word) & slot_bitmask);
+            println!(
+                "second word at 0x{:x} changing from {:08x} to {:08x}",
+                slot_word_index + 1,
+                old_word,
+                new_word
+            );
+            self.slots[slot_word_index as usize + 1] = new_word;
+        }
+    }
+
+    /// Given a relative index of a slot and the `rbits` number of bits per slot, finds the
+    /// location of the bits of this slot in this block.  Note that a slot can either be entirely
+    /// in one word, or spanning the boundary between two words.  This function returns a tuple
+    /// which represents the following information:
+    ///
+    /// `(slot_word_index, slot_bit_offset_in_word, bits_in_first_word, bits_in_second_word)`
+    ///
+    /// * `slot_word_index` - The 0-based index into the `slots` array where this slot's data
+    /// starts
+    /// * `slot_bit_offset_in_word` - The 0-based bit position where this slot's data starts
+    /// * `bits_in_first_word` - The number of bits located in the word at `slot_word_index`; this
+    /// is always at least 1
+    /// * `bits_in_second_word` - The number of bits of this slot's data located starting at bit 0
+    /// in the word at index `slot_word_index + 1`.  This may be 0 for slots located entirely in
+    /// one word
+    #[inline]
+    #[allow(dead_code)] // Just for now until higher level modules call this
+    fn find_slot(&self, rbits: usize, relative_index: u64) -> (u64, u64, u64, u64) {
+        let slots_per_block = SLOTS_PER_BLOCK as u64;
+        let block_word_size = BLOCK_WORD_SIZE as u64;
+        assert!(relative_index < slots_per_block);
+
+        //Each block contains SLOTS_PER_BLOCK slots where each slot is rbits bits long.  The slots
+        //are stored in an array of u64 words.  If rbits is an integer divisor of SLOTS_PER_BLOCK
+        //then slots cannot span multiple words, but rbits is a runtime parameter so that can't be
+        //assumed.
+        //
+        //Therefore when attempting to read a slot value there are two possible cases:
+        //* slot is entirely within a single word
+        //* slot starts on one word and ends on another
+        let rbits = rbits as u64;
+        let slot_word_index = relative_index * rbits / block_word_size;
+        let slot_bit_offset_in_word = relative_index * rbits % block_word_size;
+
+        if slot_bit_offset_in_word + rbits <= block_word_size {
+            //This slot is entirely contained within one word
+            (slot_word_index, slot_bit_offset_in_word, rbits, 0)
+        } else {
+            //This slot starts on one word and ends on the following word so extract both pieces
+            //then put them together
+
+            let bits_in_first_word = block_word_size - slot_bit_offset_in_word;
+            let bits_in_second_word = rbits - bits_in_first_word;
+
+            (
+                slot_word_index,
+                slot_bit_offset_in_word,
+                bits_in_first_word,
+                bits_in_second_word,
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::*;
+    extern crate rand;
+
+    #[test]
+    pub fn get_slot_empty_block_tests() {
+        let block: Block = Block {
+            ..Default::default()
+        };
+
+        for i in 0..SLOTS_PER_BLOCK {
+            assert_eq!(0, block.get_slot(BITS_PER_SLOT, i as u64));
+        }
+    }
+
+    #[test]
+    pub fn set_slot_empty_block_tests() {
+        let mut block: Block = Block {
+            ..Default::default()
+        };
+
+        block.set_slot(BITS_PER_SLOT, 0, 0x1ff);
+        assert_eq!(0x1ff, block.get_slot(BITS_PER_SLOT, 0));
+    }
+
+    #[test]
+    pub fn get_set_block_tests() {
+        //generate an array of random u64 values, one for each possible slot in the block
+        //iterate over them, calling get_slot and confirming 0, set_slot, then get_slot again
+        //confirming the correct value
+        //
+        //After all values are obtained, run through again, this time calling get_slot to confirm
+        //the expected value, then set_slot to set a 0 value, and get_slot to confirm the 0 value
+        let mut random_values: Vec<u64> = Vec::with_capacity(SLOTS_PER_BLOCK);
+        for _ in 0..SLOTS_PER_BLOCK {
+            random_values.push(rand::random::<u64>());
+        }
+
+        let mut block = Block {
+            ..Default::default()
+        };
+
+        let rbitmask = bitmask!(BITS_PER_SLOT);
+
+        for i in 0..SLOTS_PER_BLOCK {
+            assert_eq!(0, block.get_slot(BITS_PER_SLOT, i as u64));
+
+            let r = random_values[i] & rbitmask;
+
+            //Set the value of r to the slot.  Note that we don't use the masked-out r we use the
+            //full 64-bit random value.  This verifies that set_slot masks out the unused bits
+            block.set_slot(BITS_PER_SLOT, i as u64, random_values[i]);
+
+            println!("After setting slot {} to value {:x}, block slots:", i, r);
+            for j in 0..BITS_PER_SLOT {
+                println!("Word {}: {:08x}", j, block.slots[j]);
+            }
+
+            assert_eq!(r, block.get_slot(BITS_PER_SLOT, i as u64));
+        }
+
+        for i in 0..SLOTS_PER_BLOCK {
+            let r = random_values[i] & rbitmask;
+            assert_eq!(r, block.get_slot(BITS_PER_SLOT, i as u64));
+
+            //Set this slot back to 0 and make sure that stuck
+            block.set_slot(BITS_PER_SLOT, i as u64, 0);
+
+            assert_eq!(0, block.get_slot(BITS_PER_SLOT, i as u64));
+        }
+    }
+
+    #[test]
+    pub fn find_slot_tests() {
+        let bits_per_slot = BITS_PER_SLOT as u64;
+        let mut expected_word_index = 0u64;
+        let mut expected_bit_offset_in_word = 0u64;
+        let mut expected_bits_in_first_word = bits_per_slot;
+        let mut expected_bits_in_second_word = 0u64;
+
+        let block = Block {
+            ..Default::default()
+        };
+
+        for i in 0..SLOTS_PER_BLOCK {
+            let (slot_word_index, slot_bit_offset_in_word, bits_in_first_word, bits_in_second_word) =
+                block.find_slot(BITS_PER_SLOT, i as u64);
+
+            assert_eq!(expected_word_index, slot_word_index);
+            assert_eq!(expected_bit_offset_in_word, slot_bit_offset_in_word);
+            assert_eq!(expected_bits_in_first_word, bits_in_first_word);
+            assert_eq!(expected_bits_in_second_word, bits_in_second_word);
+
+            //Compute what the expected value of the next slot will be, by just applying some
+            //simple accumulation
+            expected_bit_offset_in_word += bits_per_slot;
+            if expected_bit_offset_in_word >= 64 {
+                expected_word_index += 1;
+                expected_bit_offset_in_word %= 64;
+            }
+
+            if expected_bit_offset_in_word + bits_per_slot <= 64 {
+                expected_bits_in_first_word = bits_per_slot;
+                expected_bits_in_second_word = 0;
+            } else {
+                expected_bits_in_first_word = 64 - expected_bit_offset_in_word;
+                expected_bits_in_second_word = bits_per_slot - expected_bits_in_first_word;
+            }
+        }
     }
 }
