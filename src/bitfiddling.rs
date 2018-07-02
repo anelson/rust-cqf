@@ -6,10 +6,6 @@
 
 #![macro_use]
 
-// If this is an x86-64 CPU target bring in the x86-64 intrinsics
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
-
 /// Internal macro which generates a compile-time expression that evaluates to a u64 bitmask with
 /// the lower `n` bits set to 1, where `n` is the parameter to the macro
 ///
@@ -18,7 +14,6 @@ use std::arch::x86_64::*;
 /// ```
 /// # #[macro_use] extern crate cqf;
 /// # fn main() {
-/// use cqf::bitfiddling::popcnt;
 ///
 /// assert_eq!(0, bitmask!(0));
 /// assert_eq!(0xffff_ffff_ffff_ffff_u64, bitmask!(64));
@@ -39,196 +34,131 @@ macro_rules! bitmask {
     }};
 }
 
-/// Given a 64-bit integer, returns the number of bits set to 1
-///
-/// # Examples
-///
-/// ```
-/// extern crate cqf;
-/// use cqf::bitfiddling::popcnt;
-///
-/// assert_eq!(0, popcnt(0b0000));
-/// assert_eq!(1, popcnt(0b1000));
-/// assert_eq!(1, popcnt(0b0001));
-/// assert_eq!(32, popcnt(0xffff_ffff_u64));
-/// assert_eq!(64, popcnt(0xffff_ffff_ffff_ffff_u64));
-/// ```
-#[inline]
-pub fn popcnt(val: u64) -> usize {
-    //popcnt_x86_64(val)
-    val.count_ones() as usize
+// If this is an x86-64 CPU target bring in the x86-64 intrinsics
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+
+/// A trait which brings in various bit-fiddling methods intended to be used with unsigned integer
+/// types.
+pub trait BitFiddling {
+    /// Given a 64-bit integer, returns the number of bits set to 1
+    #[inline]
+    fn popcnt(self) -> usize;
+
+    /// Computes the `popcnt` bit count operation, but skips the first `skip_bits` bits in the selfue
+    /// before starting the count.  If `skip_bits` is 0, this is equiselfent to `popcnt`
+    #[inline]
+    fn popcnt_skip_n(self, skip_bits: usize) -> usize;
+
+    /// Counts the number of set bits up to a certain bit position
+    /// Like the opposite of `popcnt_skip_n`, except `end_bit` is INCLUSIVE, so if `end_bit` is 0 then
+    /// this tests only the first bit, whereas `popcnt_skip_n` with a `skip_bits` of 0 will not skip
+    #[inline]
+    fn popcnt_first_n(self, end_bit: usize) -> usize;
+
+    /// Performs a reverse bit scan, finding the index of the highest set bit.
+    ///
+    /// #Returns
+    ///
+    /// `None` if the selfue has no set bits (that is, if `self` is 0), or the 0-based index of the
+    /// highest set bit
+    #[inline]
+    fn bit_scan_reverse(self) -> Option<usize>;
+
+    /// Finds the index of the lowest set bit in the selfue
+    ///
+    /// #Returns
+    ///
+    /// `None` if the selfue has no set bits (that is, if `self` is 0), or the 0-based index of the
+    /// lowest set bit
+    #[inline]
+    fn bit_scan_forward(self) -> Option<usize>;
+
+    /// Returns the position of the rank'th 1.  (rank = 0 returns the 1st 1)
+    /// Returns None if there are fewer than rank+1 1s.
+    #[inline]
+    fn bitselect(self, rank: usize) -> Option<usize>;
+
+    /// Finds the position of the rank-th bit in a word, skipping `skip_bits` bits first.
+    /// If `skip_bits` is 0, this is equiselfent to `bitselect`
+    /// Returns None if there are fewer than rank+1 1s after `skip_bits`.
+    #[inline]
+    fn bitselect_skip_n(self, rank: usize, skip_bits: usize) -> Option<usize>;
 }
 
-/// Computes the `popcnt` bit count operation, but skips the first `skip_bits` bits in the value
-/// before starting the count.  If `skip_bits` is 0, this is equivalent to `popcnt`
-///
-/// # Examples
-///
-/// ```
-/// extern crate cqf;
-/// use cqf::bitfiddling::popcnt_skip_n;
-///
-/// assert_eq!(0, popcnt_skip_n(0b0011, 2));
-/// assert_eq!(64, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 0));
-/// assert_eq!(63, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 1));
-/// assert_eq!(1, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 63));
-/// assert_eq!(0, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 64));
-/// ```
-#[inline]
-pub fn popcnt_skip_n(val: u64, skip_bits: usize) -> usize {
-    assert!(skip_bits <= 64);
-    if skip_bits < 64 {
-        //Simply mask out the first skip_bits bits
-        let mask = !bitmask!(skip_bits);
-        popcnt(val & mask)
-    } else {
-        //If this 64-bit integer has any bits set after the first 64, it's a most unusual integer
-        //indeed
-        0
+impl BitFiddling for u64 {
+    #[inline]
+    fn popcnt(self) -> usize {
+        //popcnt_x86_64(self)
+        self.count_ones() as usize
     }
-}
 
-/// Counts the number of set bits up to a certain bit position
-/// Like the opposite of `popcnt_skip_n`, except `end_bit` is INCLUSIVE, so if `end_bit` is 0 then
-/// this tests only the first bit, whereas `popcnt_skip_n` with a `skip_bits` of 0 will not skip
-/// any bits
-///
-///#Examples
-///
-/// ```
-/// extern crate cqf;
-/// use cqf::bitfiddling::popcnt_first_n;
-///
-/// assert_eq!(2, popcnt_first_n(0b0011, 2));
-/// assert_eq!(2, popcnt_first_n(0b0011, 63));
-/// assert_eq!(1, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 0));
-/// assert_eq!(2, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 1));
-/// assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 63));
-/// assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 64));
-/// ```
-#[inline]
-pub fn popcnt_first_n(val: u64, end_bit: usize) -> usize {
-    assert!(end_bit <= 64);
-    //Pretty easy, just mask val so only the first end_bit bits (inclusive)
-    //are set
-    if end_bit < 63 {
-        let mask = bitmask!(end_bit + 1);
-        popcnt(val & mask)
-    } else {
-        popcnt(val)
+    #[inline]
+    fn popcnt_skip_n(self, skip_bits: usize) -> usize {
+        assert!(skip_bits <= 64);
+        if skip_bits < 64 {
+            //Simply mask out the first skip_bits bits
+            let mask = !bitmask!(skip_bits);
+            (self & mask).popcnt()
+        } else {
+            //If this 64-bit integer has any bits set after the first 64, it's a most unusual integer
+            //indeed
+            0
+        }
     }
-}
 
-/// Performs a reverse bit scan, finding the index of the highest set bit.
-///
-/// #Returns
-///
-/// `None` if the value has no set bits (that is, if `val` is 0), or the 0-based index of the
-/// highest set bit
-///
-/// # Examples
-///
-/// ```
-/// extern crate cqf;
-///
-/// use cqf::bitfiddling::*;
-///
-/// assert_eq!(None, bit_scan_reverse(0));
-/// assert_eq!(Some(0), bit_scan_reverse(0b01_u64));
-/// assert_eq!(Some(1), bit_scan_reverse(0b11_u64));
-/// assert_eq!(Some(63), bit_scan_reverse(0xffff_ffff_ffff_ffff_u64));
-/// ```
-#[inline]
-pub fn bit_scan_reverse(val: u64) -> Option<usize> {
-    if val != 0 {
-        Some(63 - val.leading_zeros() as usize)
-    } else {
-        None
+    #[inline]
+    fn popcnt_first_n(self, end_bit: usize) -> usize {
+        assert!(end_bit <= 64);
+        //Pretty easy, just mask self so only the first end_bit bits (inclusive)
+        //are set
+        if end_bit < 63 {
+            let mask = bitmask!(end_bit + 1);
+            (self & mask).popcnt()
+        } else {
+            self.popcnt()
+        }
     }
-}
 
-/// Finds the index of the lowest set bit in the value
-///
-/// #Returns
-///
-/// `None` if the value has no set bits (that is, if `val` is 0), or the 0-based index of the
-/// lowest set bit
-///
-/// # Examples
-///
-/// ```
-/// extern crate cqf;
-///
-/// use cqf::bitfiddling::*;
-///
-/// assert_eq!(None, bit_scan_forward(0));
-/// assert_eq!(Some(0), bit_scan_forward(0x01_u64));
-/// assert_eq!(Some(0), bit_scan_forward(0x11_u64));
-/// assert_eq!(Some(0), bit_scan_forward(0xffff_ffff_ffff_ffff_u64));
-/// assert_eq!(Some(0), bit_scan_forward(0b1111_1111_1111_0000_1111));
-/// assert_eq!(Some(1), bit_scan_forward(0b1111_1111_1111_0000_1110));
-/// ```
-#[inline]
-pub fn bit_scan_forward(val: u64) -> Option<usize> {
-    if val != 0 {
-        Some(val.trailing_zeros() as usize)
-    } else {
-        None
+    #[inline]
+    fn bit_scan_reverse(self) -> Option<usize> {
+        if self != 0 {
+            Some(63 - self.leading_zeros() as usize)
+        } else {
+            None
+        }
     }
-}
 
-/// Returns the position of the rank'th 1.  (rank = 0 returns the 1st 1)
-/// Returns None if there are fewer than rank+1 1s.
-///
-/// # Examples:
-///
-/// ```
-/// extern crate cqf;
-/// use cqf::bitfiddling::*;
-///
-/// let val = 0b_1000_1111_0001u64;
-///
-/// assert_eq!(Some(0), bitselect(val, 0)); //0th 1 bit is at position 0
-/// assert_eq!(Some(4), bitselect(val, 1)); //1st 1 bit is at position 4
-/// assert_eq!(Some(5), bitselect(val, 2)); //2nd 1 bit is at position 5
-/// assert_eq!(Some(6), bitselect(val, 3)); //3rd 1 bit is at position 6
-/// assert_eq!(Some(7), bitselect(val, 4)); //4th 1 bit is at position 7
-/// assert_eq!(Some(11), bitselect(val, 5)); //4th 1 bit is at position 11
-/// assert_eq!(None, bitselect(val, 6));
-/// assert_eq!(None, bitselect(val, 7));
-/// // ...
-/// assert_eq!(None, bitselect(val, 63));
-/// ```
-#[inline]
-pub fn bitselect(val: u64, rank: usize) -> Option<usize> {
-    let pos = bitselect_x86_64_bmi2(val, rank);
-
-    if pos != 64 {
-        Some(pos as usize)
-    } else {
-        None
+    #[inline]
+    fn bit_scan_forward(self) -> Option<usize> {
+        if self != 0 {
+            Some(self.trailing_zeros() as usize)
+        } else {
+            None
+        }
     }
-}
 
-/// Finds the position of the rank-th bit in a word, skipping `skip_bits` bits first.
-/// If `skip_bits` is 0, this is equivalent to `bitselect`
-/// Returns None if there are fewer than rank+1 1s after `skip_bits`.
-///
-/// # Examples:
-///
-/// ```
-/// extern crate cqf;
-/// use cqf::bitfiddling::*;
-///
-/// let val = 0b_1000_1111_0001u64;
-///
-/// assert_eq!(Some(0), bitselect_skip_n(val, 0, 0));
-/// assert_eq!(Some(4), bitselect_skip_n(val, 0, 1));
-/// assert_eq!(None, bitselect_skip_n(val, 0, 12));
-/// ```
-#[inline]
-pub fn bitselect_skip_n(val: u64, rank: usize, skip_bits: usize) -> Option<usize> {
-    bitselect(val & !bitmask!(skip_bits), rank)
+    #[inline]
+    fn bitselect(self, rank: usize) -> Option<usize> {
+        #[cfg(all(target_arch = "x86_64", target_feature = "bmi2", target_feature = "bmi1"))]
+        {
+            let pos = bitselect_x86_64_bmi2(self, rank);
+
+            if pos != 64 {
+                Some(pos as usize)
+            } else {
+                None
+            }
+        }
+
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2", target_feature = "bmi1")))]
+        panic!("Only implemented for current generation x86_64 processors!")
+    }
+
+    #[inline]
+    fn bitselect_skip_n(self, rank: usize, skip_bits: usize) -> Option<usize> {
+        (self & !bitmask!(skip_bits)).bitselect(rank)
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "bmi2", target_feature = "bmi1"))]
@@ -236,11 +166,11 @@ pub fn bitselect_skip_n(val: u64, rank: usize, skip_bits: usize) -> Option<usize
 fn bitselect_x86_64_bmi2(val: u64, rank: usize) -> u64 {
     unsafe {
         // This is a novel (to me) use of the pdep instruction
-        // The 'mask' parameter to pdep is actually the value we're interested in
-        // The 'value' is a mask with a '1' bit in the rank-th position.
+        // The 'mask' parameter to pdep is actually the selfue we're interested in
+        // The 'selfue' is a mask with a '1' bit in the rank-th position.
         //
         // We run the pdep instruction, then use tzcnt to count the leading zeros which tells us by
-        // how many bits the input value was shifted and thus the rank of the rank-th bit.
+        // how many bits the input selfue was shifted and thus the rank of the rank-th bit.
         let mask = 1u64 << rank;
 
         _tzcnt_u64(_pdep_u64(mask, val))
@@ -268,113 +198,114 @@ mod test {
 
     #[test]
     fn test_popcnt() {
-        assert_eq!(0, popcnt(0b000000));
-        assert_eq!(1, popcnt(0b000001));
-        assert_eq!(1, popcnt(0b100000));
-        assert_eq!(2, popcnt(0b100001));
-        assert_eq!(32, popcnt(0xffff_ffff_u64));
-        assert_eq!(64, popcnt(0xffff_ffff_ffff_ffff_u64));
+        assert_eq!(0, 0b000000.popcnt());
+        assert_eq!(0, 0b000000.popcnt());
+        assert_eq!(1, 0b000001.popcnt());
+        assert_eq!(1, 0b100000.popcnt());
+        assert_eq!(2, 0b100001.popcnt());
+        assert_eq!(32, 0xffff_ffff_u64.popcnt());
+        assert_eq!(64, 0xffff_ffff_ffff_ffff_u64.popcnt());
 
         let k = 1u64;
 
         for i in 0..64 {
-            assert_eq!(1, popcnt(k << i));
+            assert_eq!(1, (k << i).popcnt());
         }
 
         let k = 0xffff_ffff_ffff_ffff_u64;
         for i in 0..64 {
-            assert_eq!(64 - i, popcnt(k.wrapping_shr(i as u32)));
+            assert_eq!(64 - i, k.wrapping_shr(i as u32).popcnt());
         }
     }
 
     #[test]
     fn test_popcnt_skip_n() {
-        assert_eq!(0, popcnt_skip_n(0b000000, 0));
-        assert_eq!(1, popcnt_skip_n(0b000001, 0));
-        assert_eq!(0, popcnt_skip_n(0b000001, 1));
-        assert_eq!(1, popcnt_skip_n(0b100000, 0));
-        assert_eq!(1, popcnt_skip_n(0b100000, 1));
-        assert_eq!(1, popcnt_skip_n(0b100000, 5));
-        assert_eq!(0, popcnt_skip_n(0b100000, 6));
-        assert_eq!(2, popcnt_skip_n(0b100001, 0));
-        assert_eq!(1, popcnt_skip_n(0b100001, 1));
-        assert_eq!(1, popcnt_skip_n(0b100001, 5));
-        assert_eq!(0, popcnt_skip_n(0b100001, 6));
-        assert_eq!(1, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 63));
-        assert_eq!(0, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 64));
+        assert_eq!(0, 0b000000.popcnt_skip_n(0));
+        assert_eq!(1, 0b000001.popcnt_skip_n(0));
+        assert_eq!(0, 0b000001.popcnt_skip_n(1));
+        assert_eq!(1, 0b100000.popcnt_skip_n(0));
+        assert_eq!(1, 0b100000.popcnt_skip_n(1));
+        assert_eq!(1, 0b100000.popcnt_skip_n(5));
+        assert_eq!(0, 0b100000.popcnt_skip_n(6));
+        assert_eq!(2, 0b100001.popcnt_skip_n(0));
+        assert_eq!(1, 0b100001.popcnt_skip_n(1));
+        assert_eq!(1, 0b100001.popcnt_skip_n(5));
+        assert_eq!(0, 0b100001.popcnt_skip_n(6));
+        assert_eq!(1, 0xffff_ffff_ffff_ffff_u64.popcnt_skip_n(63));
+        assert_eq!(0, 0xffff_ffff_ffff_ffff_u64.popcnt_skip_n(64));
 
         let k = 0xffff_ffff_ffff_ffff_u64;
 
         for i in 0..64 {
-            assert_eq!(64 - i, popcnt_skip_n(k, i));
+            assert_eq!(64 - i, k.popcnt_skip_n(i));
         }
     }
 
     #[test]
     fn test_popcnt_first_n() {
-        assert_eq!(0, popcnt_first_n(0b000000, 0));
-        assert_eq!(1, popcnt_first_n(0b000001, 0));
-        assert_eq!(1, popcnt_first_n(0b000001, 1));
-        assert_eq!(0, popcnt_first_n(0b100000, 0));
-        assert_eq!(0, popcnt_first_n(0b100000, 1));
-        assert_eq!(1, popcnt_first_n(0b100000, 5));
-        assert_eq!(1, popcnt_first_n(0b100000, 6));
-        assert_eq!(1, popcnt_first_n(0b100001, 0));
-        assert_eq!(1, popcnt_first_n(0b100001, 1));
-        assert_eq!(1, popcnt_first_n(0b100001, 2));
-        assert_eq!(1, popcnt_first_n(0b100001, 4));
-        assert_eq!(2, popcnt_first_n(0b100001, 5));
-        assert_eq!(2, popcnt_first_n(0b100001, 6));
-        assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 63));
-        assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 64));
+        assert_eq!(0, 0b000000.popcnt_first_n(0));
+        assert_eq!(1, 0b000001.popcnt_first_n(0));
+        assert_eq!(1, 0b000001.popcnt_first_n(1));
+        assert_eq!(0, 0b100000.popcnt_first_n(0));
+        assert_eq!(0, 0b100000.popcnt_first_n(1));
+        assert_eq!(1, 0b100000.popcnt_first_n(5));
+        assert_eq!(1, 0b100000.popcnt_first_n(6));
+        assert_eq!(1, 0b100001.popcnt_first_n(0));
+        assert_eq!(1, 0b100001.popcnt_first_n(1));
+        assert_eq!(1, 0b100001.popcnt_first_n(2));
+        assert_eq!(1, 0b100001.popcnt_first_n(4));
+        assert_eq!(2, 0b100001.popcnt_first_n(5));
+        assert_eq!(2, 0b100001.popcnt_first_n(6));
+        assert_eq!(64, 0xffff_ffff_ffff_ffff_u64.popcnt_first_n(63));
+        assert_eq!(64, 0xffff_ffff_ffff_ffff_u64.popcnt_first_n(64));
 
         let k = 0xffff_ffff_ffff_ffff_u64;
 
         for i in 0..64 {
-            assert_eq!(i + 1, popcnt_first_n(k, i));
+            assert_eq!(i + 1, k.popcnt_first_n(i));
         }
     }
 
     #[test]
     fn test_bit_scan_forward() {
-        assert_eq!(None, bit_scan_forward(0));
-        assert_eq!(Some(0), bit_scan_forward(0x01));
-        assert_eq!(Some(1), bit_scan_forward(0x01_u64 << 1));
-        assert_eq!(Some(5), bit_scan_forward(0x01_u64 << 5));
-        assert_eq!(Some(9), bit_scan_forward(0x01_u64 << 9));
-        assert_eq!(Some(33), bit_scan_forward(0x01_u64 << 33));
-        assert_eq!(Some(63), bit_scan_forward(0x01_u64 << 63));
+        assert_eq!(None, 0.bit_scan_forward());
+        assert_eq!(Some(0), 0x01.bit_scan_forward());
+        assert_eq!(Some(1), (0x01_u64 << 1).bit_scan_forward());
+        assert_eq!(Some(5), (0x01_u64 << 5).bit_scan_forward());
+        assert_eq!(Some(9), (0x01_u64 << 9).bit_scan_forward());
+        assert_eq!(Some(33), (0x01_u64 << 33).bit_scan_forward());
+        assert_eq!(Some(63), (0x01_u64 << 63).bit_scan_forward());
     }
 
     #[test]
     fn test_bit_scan_reverse() {
-        assert_eq!(Some(0), bit_scan_reverse(0b01_u64));
-        assert_eq!(Some(1), bit_scan_reverse(0b11_u64));
-        assert_eq!(Some(63), bit_scan_reverse(0xffff_ffff_ffff_ffff_u64));
+        assert_eq!(Some(0), 0b01_u64.bit_scan_reverse());
+        assert_eq!(Some(1), 0b11_u64.bit_scan_reverse());
+        assert_eq!(Some(63), 0xffff_ffff_ffff_ffff_u64.bit_scan_reverse());
     }
 
     #[test]
     fn test_bitselect() {
-        assert_eq!(None, bitselect(0x0, 0));
-        assert_eq!(Some(1), bitselect(0b100010, 0));
-        assert_eq!(Some(5), bitselect(0b100010, 1));
-        assert_eq!(None, bitselect(0b100010, 2));
+        assert_eq!(None, 0x0.bitselect(0));
+        assert_eq!(Some(1), 0b100010.bitselect(0));
+        assert_eq!(Some(5), 0b100010.bitselect(1));
+        assert_eq!(None, 0b100010.bitselect(2));
     }
 
     #[test]
     fn test_bitselect_skip_n() {
-        assert_eq!(None, bitselect_skip_n(0x0, 0, 0));
-        assert_eq!(Some(1), bitselect_skip_n(0b100010, 0, 0));
-        assert_eq!(Some(1), bitselect_skip_n(0b100010, 0, 1));
-        assert_eq!(Some(5), bitselect_skip_n(0b100010, 0, 2));
-        assert_eq!(Some(5), bitselect_skip_n(0b100010, 1, 0));
-        assert_eq!(None, bitselect_skip_n(0b100010, 2, 0));
-        assert_eq!(None, bitselect_skip_n(0b100010, 1, 2));
+        assert_eq!(None, 0x0.bitselect_skip_n(0, 0));
+        assert_eq!(Some(1), 0b100010.bitselect_skip_n(0, 0));
+        assert_eq!(Some(1), 0b100010.bitselect_skip_n(0, 1));
+        assert_eq!(Some(5), 0b100010.bitselect_skip_n(0, 2));
+        assert_eq!(Some(5), 0b100010.bitselect_skip_n(1, 0));
+        assert_eq!(None, 0b100010.bitselect_skip_n(2, 0));
+        assert_eq!(None, 0b100010.bitselect_skip_n(1, 2));
 
         let val = 0b_1000_1111_0001u64;
 
-        assert_eq!(Some(0), bitselect_skip_n(val, 0, 0));
-        assert_eq!(Some(4), bitselect_skip_n(val, 0, 1));
-        assert_eq!(None, bitselect_skip_n(val, 0, 12));
+        assert_eq!(Some(0), val.bitselect_skip_n(0, 0));
+        assert_eq!(Some(4), val.bitselect_skip_n(0, 1));
+        assert_eq!(None, val.bitselect_skip_n(0, 12));
     }
 }
