@@ -54,9 +54,9 @@ macro_rules! bitmask {
 /// assert_eq!(64, popcnt(0xffff_ffff_ffff_ffff_u64));
 /// ```
 #[inline]
-pub fn popcnt(val: u64) -> u64 {
+pub fn popcnt(val: u64) -> usize {
     //popcnt_x86_64(val)
-    val.count_ones() as u64
+    val.count_ones() as usize
 }
 
 /// Computes the `popcnt` bit count operation, but skips the first `skip_bits` bits in the value
@@ -75,7 +75,7 @@ pub fn popcnt(val: u64) -> u64 {
 /// assert_eq!(0, popcnt_skip_n(0xffff_ffff_ffff_ffff_u64, 64));
 /// ```
 #[inline]
-pub fn popcnt_skip_n(val: u64, skip_bits: u64) -> u64 {
+pub fn popcnt_skip_n(val: u64, skip_bits: usize) -> usize {
     assert!(skip_bits <= 64);
     if skip_bits < 64 {
         //Simply mask out the first skip_bits bits
@@ -107,7 +107,7 @@ pub fn popcnt_skip_n(val: u64, skip_bits: u64) -> u64 {
 /// assert_eq!(64, popcnt_first_n(0xffff_ffff_ffff_ffff_u64, 64));
 /// ```
 #[inline]
-pub fn popcnt_first_n(val: u64, end_bit: u64) -> u64 {
+pub fn popcnt_first_n(val: u64, end_bit: usize) -> usize {
     assert!(end_bit <= 64);
     //Pretty easy, just mask val so only the first end_bit bits (inclusive)
     //are set
@@ -139,9 +139,9 @@ pub fn popcnt_first_n(val: u64, end_bit: u64) -> u64 {
 /// assert_eq!(Some(63), bit_scan_reverse(0xffff_ffff_ffff_ffff_u64));
 /// ```
 #[inline]
-pub fn bit_scan_reverse(val: u64) -> Option<u64> {
+pub fn bit_scan_reverse(val: u64) -> Option<usize> {
     if val != 0 {
-        Some(63 - val.leading_zeros() as u64)
+        Some(63 - val.leading_zeros() as usize)
     } else {
         None
     }
@@ -169,9 +169,9 @@ pub fn bit_scan_reverse(val: u64) -> Option<u64> {
 /// assert_eq!(Some(1), bit_scan_forward(0b1111_1111_1111_0000_1110));
 /// ```
 #[inline]
-pub fn bit_scan_forward(val: u64) -> Option<u64> {
+pub fn bit_scan_forward(val: u64) -> Option<usize> {
     if val != 0 {
-        Some(val.trailing_zeros() as u64)
+        Some(val.trailing_zeros() as usize)
     } else {
         None
     }
@@ -200,11 +200,11 @@ pub fn bit_scan_forward(val: u64) -> Option<u64> {
 /// assert_eq!(None, bitselect(val, 63));
 /// ```
 #[inline]
-pub fn bitselect(val: u64, rank: u64) -> Option<u64> {
+pub fn bitselect(val: u64, rank: usize) -> Option<usize> {
     let pos = bitselect_x86_64_bmi2(val, rank);
 
     if pos != 64 {
-        Some(pos)
+        Some(pos as usize)
     } else {
         None
     }
@@ -227,13 +227,13 @@ pub fn bitselect(val: u64, rank: u64) -> Option<u64> {
 /// assert_eq!(None, bitselect_skip_n(val, 0, 12));
 /// ```
 #[inline]
-pub fn bitselect_skip_n(val: u64, rank: u64, skip_bits: u64) -> Option<u64> {
+pub fn bitselect_skip_n(val: u64, rank: usize, skip_bits: usize) -> Option<usize> {
     bitselect(val & !bitmask!(skip_bits), rank)
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "bmi2", target_feature = "bmi1"))]
 #[inline]
-fn bitselect_x86_64_bmi2(val: u64, rank: u64) -> u64 {
+fn bitselect_x86_64_bmi2(val: u64, rank: usize) -> u64 {
     unsafe {
         // This is a novel (to me) use of the pdep instruction
         // The 'mask' parameter to pdep is actually the value we're interested in
