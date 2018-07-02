@@ -1,6 +1,85 @@
 //! Describes a `BitArray` trait and purpose-built implementations for both `u64` arrays and single
 //! `u64` types.
+use bitfiddling::BitFiddling;
 use std::mem;
+
+/// An array where each element is a single bit.  The RSQF structure uses `u64` values to represent
+/// arrays of 64 single bit values, and takes advantage of some binary trickery to do various
+/// computations at high speed.  To the extent those operations are not RSQF specific but are
+/// general purpose bit-flippery, they are abstracted away behind this trait and its corresponding
+/// implementation on `u64`
+pub trait SingleBitArray {
+    #[inline]
+    fn get_bit(self, index: usize) -> bool;
+
+    #[inline]
+    fn set_bit(&mut self, index: usize, val: bool) -> ();
+
+    /// Returns the bit position of the `n`th set bit, or `None` if there is no such bit.
+    ///
+    /// This is often called a SELECT operation.
+    #[inline]
+    fn find_nth_set_bit(self, n: usize) -> Option<usize>;
+
+    /// Masks off the first `n` bits and returns them in a `u64`.  Obviously this assumes `n` is
+    /// less than 64.
+    #[inline]
+    fn get_first_n_bits(self, n: usize) -> u64;
+
+    /// Counts the number of set bits in the array.  This is often called a POPCNT (for "population
+    /// count") operation.
+    #[inline]
+    fn count_set_bits(self) -> usize;
+
+    /// Counts how many set bits are in the array from bit 0 counting `n` bits.  This is also known
+    /// as a RANK operation
+    #[inline]
+    fn count_first_n_set_bits(self, n: usize) -> usize;
+}
+
+impl SingleBitArray for u64 {
+    #[inline]
+    fn get_bit(self, index: usize) -> bool {
+        self & (1u64 << index) != 0
+    }
+
+    #[inline]
+    fn set_bit(&mut self, index: usize, val: bool) -> () {
+        let mask = 1u64 << index;
+        let bitvalue = if val { mask } else { 0u64 };
+
+        *self = (*self & !mask) | bitvalue;
+    }
+
+    /// Returns the bit position of the `n`th set bit, or `None` if there is no such bit.
+    ///
+    /// This is often called a SELECT operation.
+    #[inline]
+    fn find_nth_set_bit(self, n: usize) -> Option<usize> {
+        self.bitselect(n)
+    }
+
+    /// Masks off the first `n` bits and returns them in a `u64`.  Obviously this assumes `n` is
+    /// less than 64.
+    #[inline]
+    fn get_first_n_bits(self, n: usize) -> u64 {
+        self & bitmask!(n)
+    }
+
+    /// Counts the number of set bits in the array.  This is often called a POPCNT (for "population
+    /// count") operation.
+    #[inline]
+    fn count_set_bits(self) -> usize {
+        self.popcnt()
+    }
+
+    /// Counts how many set bits are in the array from bit 0 counting `n` bits.  This is also known
+    /// as a RANK operation
+    #[inline]
+    fn count_first_n_set_bits(self, n: usize) -> usize {
+        self.popcnt_first_n(n)
+    }
+}
 
 /// A multi-bit array stores unsigned integer values of some fixed bit length `n`, packed neatly
 /// together and stored in a `u64` array underneath.  This is useful because the RSQF structure
