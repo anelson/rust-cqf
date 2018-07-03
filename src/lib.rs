@@ -1,12 +1,12 @@
 // treat warnings as errors
 #![deny(warnings)]
-pub mod bitfiddling;
+mod bitfiddling;
 
 //NOTE: bitarray uses the bitmask! macro from bitfiddling so it must come after bitfiddling in this
 //listing
-pub mod bitarray;
-pub mod murmur;
+mod bitarray;
+mod murmur;
 
-pub mod block;
-pub mod physical;
+mod block;
+mod physical;
 pub mod rsqf;

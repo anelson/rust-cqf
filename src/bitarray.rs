@@ -234,6 +234,8 @@ impl MultiBitArray for [u64] {
 #[inline]
 #[allow(dead_code)] // Just for now until higher level modules call this
 fn find_slot(arr: &[u64], nbits: usize, index: usize) -> (usize, usize, usize, usize) {
+    debug_assert!(nbits > 0);
+
     let total_slots = arr.len() * 64 / nbits;
     let block_word_size = mem::size_of::<u64>() * 8;
     assert!(index < total_slots);
