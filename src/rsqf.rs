@@ -1,6 +1,6 @@
 use block;
 use murmur::Murmur3Hash;
-use std::vec::Vec;
+use physical;
 
 #[allow(dead_code)] // for now
 pub struct RSQF {
@@ -25,14 +25,7 @@ struct Metadata {
 #[allow(dead_code)] // for now
 #[derive(Default, PartialEq)]
 struct LogicalData {
-    physical: PhysicalData,
-}
-
-#[allow(dead_code)] // for now
-#[derive(Default, PartialEq)]
-struct PhysicalData {
-    blocks: Vec<block::Block>,
-    rbits: usize,
+    physical: physical::PhysicalData,
 }
 
 /// Standard filter result type, on success returns a count on error returns a message
@@ -313,7 +306,7 @@ mod metadata_tests {
 impl LogicalData {
     fn new(meta: &Metadata) -> LogicalData {
         LogicalData {
-            physical: PhysicalData::new(meta.nslots, meta.rbits),
+            physical: physical::PhysicalData::new(meta.nslots, meta.rbits),
             ..Default::default()
         }
     }
@@ -321,25 +314,3 @@ impl LogicalData {
 
 #[cfg(test)]
 mod logicaldata_tests {}
-
-impl PhysicalData {
-    fn new(nblocks: usize, rbits: usize) -> PhysicalData {
-        // Allocate a vector of Block structures.  Because of how this structure will be used,
-        // the contents should be populated in advance
-        let blocks = vec![Default::default(); nblocks];
-        PhysicalData { blocks, rbits }
-    }
-}
-
-#[cfg(test)]
-mod physical_data_tests {
-    use super::*;
-
-    #[test]
-    fn creates_blocks() {
-        let pd = PhysicalData::new(10, block::BITS_PER_SLOT);
-
-        assert_eq!(pd.blocks.len(), 10);
-        assert_eq!(pd.blocks[0], Default::default());
-    }
-}

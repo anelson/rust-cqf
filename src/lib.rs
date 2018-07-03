@@ -8,4 +8,5 @@ pub mod bitarray;
 pub mod murmur;
 
 pub mod block;
+pub mod physical;
 pub mod rsqf;
