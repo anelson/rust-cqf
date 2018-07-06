@@ -83,7 +83,7 @@ pub trait BitFiddling {
     /// If `skip_bits` is 0, this is equiselfent to `bitselect`
     /// Returns None if there are fewer than rank+1 1s after `skip_bits`.
     #[inline]
-    fn bitselect_skip_n(self, rank: usize, skip_bits: usize) -> Option<usize>;
+    fn bitselect_skip_n(self, skip_bits: usize, rank: usize) -> Option<usize>;
 }
 
 impl BitFiddling for u64 {
@@ -95,7 +95,7 @@ impl BitFiddling for u64 {
 
     #[inline]
     fn popcnt_skip_n(self, skip_bits: usize) -> usize {
-        assert!(skip_bits <= 64);
+        debug_assert!(skip_bits <= 64);
         if skip_bits < 64 {
             //Simply mask out the first skip_bits bits
             let mask = !bitmask!(skip_bits);
@@ -109,7 +109,7 @@ impl BitFiddling for u64 {
 
     #[inline]
     fn popcnt_first_n(self, end_bit: usize) -> usize {
-        assert!(end_bit <= 64);
+        debug_assert!(end_bit <= 64);
         //Pretty easy, just mask self so only the first end_bit bits (inclusive)
         //are set
         if end_bit < 63 {
@@ -156,7 +156,7 @@ impl BitFiddling for u64 {
     }
 
     #[inline]
-    fn bitselect_skip_n(self, rank: usize, skip_bits: usize) -> Option<usize> {
+    fn bitselect_skip_n(self, skip_bits: usize, rank: usize) -> Option<usize> {
         (self & !bitmask!(skip_bits)).bitselect(rank)
     }
 }
@@ -296,16 +296,16 @@ mod test {
     fn test_bitselect_skip_n() {
         assert_eq!(None, 0x0.bitselect_skip_n(0, 0));
         assert_eq!(Some(1), 0b100010.bitselect_skip_n(0, 0));
-        assert_eq!(Some(1), 0b100010.bitselect_skip_n(0, 1));
-        assert_eq!(Some(5), 0b100010.bitselect_skip_n(0, 2));
-        assert_eq!(Some(5), 0b100010.bitselect_skip_n(1, 0));
-        assert_eq!(None, 0b100010.bitselect_skip_n(2, 0));
-        assert_eq!(None, 0b100010.bitselect_skip_n(1, 2));
+        assert_eq!(Some(1), 0b100010.bitselect_skip_n(1, 0));
+        assert_eq!(Some(5), 0b100010.bitselect_skip_n(2, 0));
+        assert_eq!(Some(5), 0b100010.bitselect_skip_n(0, 1));
+        assert_eq!(None, 0b100010.bitselect_skip_n(0, 2));
+        assert_eq!(None, 0b100010.bitselect_skip_n(2, 1));
 
         let val = 0b_1000_1111_0001u64;
 
         assert_eq!(Some(0), val.bitselect_skip_n(0, 0));
-        assert_eq!(Some(4), val.bitselect_skip_n(0, 1));
-        assert_eq!(None, val.bitselect_skip_n(0, 12));
+        assert_eq!(Some(4), val.bitselect_skip_n(1, 0));
+        assert_eq!(None, val.bitselect_skip_n(12, 0));
     }
 }
