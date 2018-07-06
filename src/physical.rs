@@ -12,11 +12,32 @@ pub struct PhysicalData {
     pub rbits: usize,
 }
 
-/// The type which represents the value of a slot.  Note that the actual number of bits stored
-/// and retrieved is not 64 but is determiend by the `rbits` runtime parameter.
-type SlotValue = u64;
+/// The type which represents the value of a hash.  Though this is the same underlying type as
+/// `SlotValue`, semantically they mean different things.  `SlotValue` is the `rbits`-bits long
+/// value of the "remainder" portion of a hash value. `HashValue` by contrast is the entire 64-bit
+/// hash value, which we logically divide into the `rbits`-bit "remainder", the `qbits`-bit
+/// "quotient", and if there are any bits left over we discard them.
+///
+/// This type, as well as `RemainderValue` and `QuotientValue`, all have the same integer type,
+/// they are separated out as separate type aliases to make it more clear which kind of value is
+/// being used where.
+///
+/// The actual C code RSQF implementation makes this less clear, and sometimes uses terms like
+/// `index`, `hash_value`, `slot` interchangeably.
+#[allow(dead_code)] // for now
+type HashValue = u64;
+
+/// The type which represents the value of the remainder portion of a `HashValue`.  It is these
+/// remainders which are stored in `rbits`-bit slots within the physical data layer.  
+/// Note that the actual number of bits stored and retrieved is not 64 but is determiend by the `rbits` runtime parameter.
+type RemainderValue = u64;
+
+/// The type which contains the "quotient" part of a `HashValue`.  The number of bits used to
+/// actually represent a quotient is computed in higher layers as the parameter `q` or `qbits`.
+type QuotientValue = u64;
 
 #[allow(dead_code)] // just for development
+#[allow(unused_variables)]
 impl PhysicalData {
     /// Creates a new physical data structure for storing remainders, where each remainder is
     /// `rbits` bits long and a total of `nslots` slots are stored.
@@ -47,15 +68,8 @@ impl PhysicalData {
     /// Gets the value currently stored in the `index`th slot.  Note that this isn't necessarily
     /// the value corresponding to any specific quotient from which `index` was derived; this is
     /// just an array lookup.
-    pub fn get_slot(&self, index: usize) -> SlotValue {
-        let block_index = index / block::SLOTS_PER_BLOCK;
-        let relative_index = index % block::SLOTS_PER_BLOCK;
-
-        assert!(
-            block_index < self.blocks.len(),
-            "slot index {} is out of range",
-            index
-        );
+    pub fn get_slot(&self, index: usize) -> RemainderValue {
+        let (block_index, relative_index) = self.get_slot_location(index);
 
         self.blocks[block_index].get_slot(self.rbits, relative_index)
     }
@@ -67,27 +81,45 @@ impl PhysicalData {
     /// # Returns
     ///
     /// Returns the previous value stored in the slot.
-    pub fn set_slot(&mut self, index: usize, val: SlotValue) -> SlotValue {
-        let block_index = index / block::SLOTS_PER_BLOCK;
-        let relative_index = index % block::SLOTS_PER_BLOCK;
-
-        assert!(
-            block_index < self.blocks.len(),
-            "slot index {} is out of range",
-            index
-        );
+    pub fn set_slot(&mut self, index: usize, val: RemainderValue) -> RemainderValue {
+        let (block_index, relative_index) = self.get_slot_location(index);
 
         self.blocks[block_index].set_slot(self.rbits, relative_index, val)
+    }
+
+    /// Tests if a given slot's "runend" flag is set.  
+    pub fn is_runend(&self, index: usize) -> bool {
+        let (block_index, relative_index) = self.get_slot_location(index);
+        self.blocks[block_index].is_runend(relative_index)
+    }
+
+    /// Sets the runend bit for the specified index.
+    pub fn set_runend(&mut self, index: usize, val: bool) -> () {
+        let (block_index, relative_index) = self.get_slot_location(index);
+        self.blocks[block_index].set_runend(relative_index, val)
+    }
+
+    /// Tests if a given slot's "occupied" flag is set.  Note this doesn't mean that specific slot
+    /// has data in it, it means the quotient with that slot as it's home slot is present somewhere
+    /// in the filter.
+    pub fn is_occupied(&self, index: usize) -> bool {
+        let (block_index, relative_index) = self.get_slot_location(index);
+        self.blocks[block_index].is_occupied(relative_index)
+    }
+
+    /// Sets the occupied bit for the specified index.
+    pub fn set_occupied(&mut self, index: usize, val: bool) -> () {
+        let (block_index, relative_index) = self.get_slot_location(index);
+        self.blocks[block_index].set_occupied(relative_index, val)
     }
 
     /// Given an quotient `index` which identifies a slot containining a run (note: not necessarily the run corresponding
     /// to the quotient `index`; it could contain a run for an lower quotient value if values have
     /// shifted), determines the slot index where that run ends.
     #[inline]
-    pub fn find_run_end(&self, index: usize) -> usize {
+    pub fn find_run_end_shitty(&self, index: usize) -> usize {
         //This corresponds to the cqf.c function run_end
-        let slot_block_index = index / block::SLOTS_PER_BLOCK;
-        let slot_intrablock_index = index % block::SLOTS_PER_BLOCK;
+        let (slot_block_index, slot_intrablock_index) = self.get_slot_location(index);
         let block_offset = self.get_block_offset(slot_block_index);
 
         // within this block, find the rank of `index` slot's bit in the `occupied` bitmap.
@@ -98,14 +130,16 @@ impl PhysicalData {
         let slot_intrablock_rank =
             self.blocks[slot_block_index].get_occupied_rank(slot_intrablock_index);
         if slot_intrablock_rank == 0 {
-            //No occupied slots anywhere in this block from the start up to slot_intrablock_index.
-            //In most cases this means the slot at `index` isn't occupied, but it could also mean
-            //the block we're looking in doesn't contain that slot's value due to being shifted
+            // the quotient whose 'home slot' is `index` is not stored in the filter, as we can
+            // tell from the `occupieds` bitmap that we just tested.  It's still possible that
+            // `index` is being used to store remainders in a run from a lower quotient value...
             if block_offset <= slot_intrablock_index {
-                //This is the normal case.  It means we have the correct block, there hasn't been
-                //any shifting around.  We confirmed that the rank of this slot in `occupieds` is 0
-                //so there are no runs in this block.  That means the 'run end' for this index is
-                //itself
+                // `block_offset` is how far from slot 0 of this block is the run end corresponding
+                // to that slot 0.  It's less than the index of this slot in the block.
+                // The C code uses this to determine that the run end for `index` is itself.
+                // I can't explain that.  What if this is the 63rd slot in a block, and between
+                // `block_offset` and this slot is the start of another run that goes on for
+                // multiple blocks?
                 return index;
             } else {
                 //THis is the less common case.
@@ -125,6 +159,52 @@ impl PhysicalData {
         //The easy path has been exhausted; there are definitely SOME occupied slots in this block
         //up to or including the slot we're asking about.  Need to figure out where the run
         //correspondign to our particular slot is, and thereby where the run ends.
+        panic!("NYI");
+    }
+
+    /// Given a quotient value `quotient` (in the paper this is `h0(x)` or sometimes `q`) attempts
+    /// to find the slot index where that quotient's run of remainder values ends.  If this
+    /// quotient is not "occupied" (meaning no remainders for that quotient have been stored in the
+    /// filter) then the result is None.
+    #[inline]
+    pub fn find_quotient_run_end(&self, quotient: QuotientValue) -> Option<usize> {
+        //Find the block where this quotient is located, then check the `occupieds` field for this
+        //quotient's bit.  If that bit is not set, then there are no runs for this quotient.
+        let (block_index, intrablock_index) = self.get_slot_location(quotient as usize);
+        let block = self.get_block(block_index);
+
+        if !block.is_occupied(intrablock_index) {
+            //This quotient is not occupied at all so there is no run end.
+            return None;
+        }
+
+        //Now we know the quotient has at least one and possibly multiple remainders.  The question
+        //is where.  For filters that are mostly empty, it's likely this quotient's run of
+        //remainders starts at the quotient's home slot, but as the filter fills up that becomes
+        //less likely.  We will start by looking at the block containing this quotient's home slot.
+        //Remember that one invariant of this kind of filter is that the run for a quotient starts
+        //either at its home slot, or if that's in use the first free slot after the home slot.
+        //That narrows down our search considerably.
+
+        // get the offset of this quotient's block.  The offset tells us where to find the runend for the
+        // quotient whose home slot is slot 0 in this block.
+        let block_offset = self.get_block_offset(block_index);
+
+        panic!("NYI");
+    }
+
+    /// Given the index for some slot `index`, assuming that slot is part of some run, figures out
+    /// the index of the run end (that is, the last slot that is part of the same run) for that
+    /// slot.
+    ///
+    /// Importantly, this is diffrent from the `find_quotient_run_end` above in that the
+    /// `find_quotient_run_end` specifies a specific quotient of interest, and finds the run for
+    /// that quotient wherever in the slots it is, then computes its run end.  This method doesn't
+    /// care what quotient any of the runs correspond to; this slot is presumed to be part of a
+    /// run, and it finds that end.  Higher level code that this is needed to figure out which
+    /// quotient this run belongs to.
+    #[inline]
+    pub fn find_slot_run_end(&self, index: usize) -> Option<usize> {
         panic!("NYI");
     }
 
@@ -168,6 +248,37 @@ impl PhysicalData {
                 }
             }
         }
+    }
+
+    /// Given the index of a slot, computes not the actual offset of its run end, but the lower
+    /// bound on that offset.  I don't understand why this is used, it comes from the
+    /// `offset_lower_bound` function in the C implementation.  Perhaps this is more efficient than
+    /// computing the actual end of the run?
+    #[inline]
+    fn get_slot_offset_lower_bound(&self, index: usize) -> usize {
+        let (slot_block_index, slot_intrablock_index) = self.get_slot_location(index);
+        self.blocks[slot_block_index].get_slot_offset_lower_bound(slot_intrablock_index)
+    }
+
+    /// Gets an immutable reference to a block.  Using Rust lifetime trickery ensures this doesn't
+    /// result in a dangling pointer.
+    #[inline]
+    fn get_block<'s: 'block, 'block>(&'s self, index: usize) -> &'block block::Block {
+        assert!(
+            index < self.blocks.len(),
+            "block index {} is out of bounds",
+            index
+        );
+
+        &self.blocks[index]
+    }
+
+    #[inline]
+    fn get_slot_location(&self, index: usize) -> (usize, usize) {
+        let block_index = index / block::SLOTS_PER_BLOCK;
+        let intrablock_index = index % block::SLOTS_PER_BLOCK;
+
+        (block_index, intrablock_index)
     }
 }
 

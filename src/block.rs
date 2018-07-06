@@ -9,6 +9,17 @@ pub const SLOTS_PER_BLOCK: usize = (1 << BLOCK_OFFSET_BITS); //64 currently
 #[allow(dead_code)] // for now
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Block {
+    /// The offset, in slots, from the first slot in this block to the end of whatever run that
+    /// slot is part of.  0 could mean this is the end of that run or more likely that there is no
+    /// such run.
+    ///
+    /// NB: The RSQF paper is a bit ambiguous about this so it bears clarification: when we talk
+    /// about the "end of whatever run that slot [0] is part of" we don't mean a run specific to
+    /// whatever quotient has its home slot in slot 0 of this block, we mean ANY run that happens
+    /// to include slot 0 of this block in it.  Because of the way values are shifted to maintain
+    /// invariants, it's entirely possible that slot 0 contains a remainder that's part of a run
+    /// from a quotient whose home slot is in some previous block; we can't determine that just by
+    /// looking at this offset.
     offset: u8,
     occupieds: u64,
     runends: u64,
@@ -45,6 +56,42 @@ impl Block {
             self.offset = offset as u8;
         } else {
             self.offset = std::u8::MAX
+        }
+    }
+
+    /// Given the index of a slot, computes not the actual offset of its run end, but the lower
+    /// bound on that offset.  I don't understand why this is used, it comes from the
+    /// `offset_lower_bound` function in the C implementation.  Perhaps this is more efficient than
+    /// computing the actual end of the run?
+    #[inline]
+    pub fn get_slot_offset_lower_bound(&self, relative_index: usize) -> usize {
+        debug_assert!(relative_index < SLOTS_PER_BLOCK);
+
+        //NB: In cqf.c the function offset_lower_bound operates on a slot index, but in the body
+        //everything it does is within the context of a single block.  Since in the Rust version
+        //the Block structure's fields are private, it's more convenient to implement this here
+        let block_offset = self.offset as usize; //NB: this isn't decoded; it could be MAX
+
+        //Get the occupieds bit fields only up to this slot plus one more (don't know why +1)
+        let occupieds = self.occupieds & bitmask!(relative_index + 1);
+
+        if block_offset <= relative_index {
+            //the run for the slot at the start of this block ends either before the slot at
+            //`relative_index` or at it, but not past it.
+            //count the runends after the runend at block_offset, up to and including
+            //relative_index
+            let runends = (self.runends & bitmask!(relative_index)) >> block_offset;
+
+            //the lower bound offset is the number of occupied slots up to `relative_index` in this
+            //block, minus the number of runends between the runend at block_offset and
+            //`relative_index`.  I can't explain why this is the lower offset bound.
+            occupieds.popcnt() - runends.popcnt()
+        } else {
+            //else the runend for the first slot in this block is after `relative_index` so the
+            //lower bound is however many slots past `relative_index` is the runend for this
+            //block's first slot, plus the number of occupieds between the two.
+            //Again I can't explain this logic
+            block_offset - relative_index + occupieds.popcnt()
         }
     }
 
