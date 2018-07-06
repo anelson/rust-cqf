@@ -5,8 +5,11 @@ mod bitfiddling;
 //NOTE: bitarray uses the bitmask! macro from bitfiddling so it must come after bitfiddling in this
 //listing
 mod bitarray;
+mod block;
 mod murmur;
 
-mod block;
 mod physical;
+
+mod logical;
+
 pub mod rsqf;

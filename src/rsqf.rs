@@ -1,11 +1,11 @@
 use block;
+use logical;
 use murmur::Murmur3Hash;
-use physical;
 
 #[allow(dead_code)] // for now
 pub struct RSQF {
     meta: Metadata,
-    logical: LogicalData,
+    logical: logical::LogicalData,
 }
 
 #[allow(dead_code)] // for now
@@ -20,12 +20,6 @@ struct Metadata {
     nslots: usize,
     noccupied_slots: usize,
     max_slots: usize,
-}
-
-#[allow(dead_code)] // for now
-#[derive(Default, PartialEq)]
-struct LogicalData {
-    physical: physical::PhysicalData,
 }
 
 /// Standard filter result type, on success returns a count on error returns a message
@@ -48,7 +42,7 @@ impl RSQF {
     /// Creates an instance of the filter given the description of the filter parameters stored in
     /// a `Metadata` structure
     fn from_metadata(meta: Metadata) -> RSQF {
-        let logical = LogicalData::new(&meta);
+        let logical = logical::LogicalData::new(meta.nslots, meta.rbits);
 
         return RSQF { meta, logical };
     }
@@ -302,15 +296,3 @@ mod metadata_tests {
         }
     }
 }
-
-impl LogicalData {
-    fn new(meta: &Metadata) -> LogicalData {
-        LogicalData {
-            physical: physical::PhysicalData::new(meta.nslots, meta.rbits),
-            ..Default::default()
-        }
-    }
-}
-
-#[cfg(test)]
-mod logicaldata_tests {}
