@@ -26,6 +26,20 @@ pub struct Block {
     slots: [u64; BITS_PER_SLOT],
 }
 
+/// Conveys the result of a scan through a block for a runend of a certain rank.  Scans either conclude in a match,
+/// or not enough runends are found so the scan returns how many were found
+#[derive(Debug, PartialEq)]
+pub enum ScanForRunendResult {
+    /// Indicates the runend of the desired rank has been found, and returns its index relative to
+    /// the start of the block in which it was found.
+    FoundIt(usize),
+
+    /// Indicates the runend of the desired rank was not found, and returns the number of set
+    /// runend bits the scan passed while searching.  The caller can use this to continue the scan
+    /// in the next block.
+    KeepScanning(usize),
+}
+
 #[allow(dead_code)] // for now
 impl Block {
     /// Returns the distance between `i` the first slot in this block, and the slot containing the
@@ -116,11 +130,36 @@ impl Block {
         self.slots.set_slot(rbits, relative_index, val)
     }
 
+    /// Tests if the occupied bit for the specified relative index is set.
+    pub fn is_occupied(&self, relative_index: usize) -> bool {
+        debug_assert!(relative_index < SLOTS_PER_BLOCK);
+
+        self.occupieds.get_bit(relative_index)
+    }
+
+    /// Sets the occupied bit for the specified relative index.
+    pub fn set_occupied(&mut self, relative_index: usize, val: bool) -> () {
+        debug_assert!(relative_index < SLOTS_PER_BLOCK);
+
+        self.occupieds.set_bit(relative_index, val);
+    }
+
     /// Given the relative index of a slot, checks the `occupies` bitmap and returns the number of
     /// `1` bits up to `relative_index`
     #[inline]
     pub fn get_occupied_rank(&self, relative_index: usize) -> usize {
         self.occupieds.popcnt_first_n(relative_index)
+    }
+
+    /// Given the relative index of a slot, checks the `occupies` bitmap and returns the number of
+    /// `1` bits up to `relative_index`.  Skips the first `skip_count` bits in `occupieds` before
+    /// computing the rank
+    #[inline]
+    pub fn get_occupied_rank_skip_n(&self, skip_count: usize, relative_index: usize) -> usize {
+        debug_assert!(relative_index >= skip_count, 
+                      "skip_count is {} but relative_index is {} which will always return 0; are you sure this is what you meant?",
+                      skip_count, relative_index);
+        (self.occupieds & !bitmask!(skip_count)).popcnt_first_n(relative_index)
     }
 
     /// Tests if the runend bit for the specified relative index is set.
@@ -137,18 +176,36 @@ impl Block {
         self.runends.set_bit(relative_index, val);
     }
 
-    /// Tests if the occupied bit for the specified relative index is set.
-    pub fn is_occupied(&self, relative_index: usize) -> bool {
-        debug_assert!(relative_index < SLOTS_PER_BLOCK);
-
-        self.occupieds.get_bit(relative_index)
-    }
-
-    /// Sets the occupied bit for the specified relative index.
-    pub fn set_occupied(&mut self, relative_index: usize, val: bool) -> () {
-        debug_assert!(relative_index < SLOTS_PER_BLOCK);
-
-        self.occupieds.set_bit(relative_index, val);
+    /// Scans through this block looking for the `rank`-th set runend bit.  If it finds it, returns
+    /// that bit.  If it doesnt, returns how many set `runend` bits it passed along the way so the
+    /// scan can continue at the next block.
+    ///
+    /// # Arguments
+    ///
+    /// * `skip_count` - The number of runend bits (set or not doesn't matter) to skip before
+    /// starting the scan.  `0` means the entire `runends` field is scanned.
+    /// * `rank` - The rank of the runend bit to find.  Rank in this case means the `rank`-th set
+    /// bit in the `runends` field (after skipping `skip_count` initial bits)
+    ///
+    /// # Returns
+    ///
+    /// * `FoundIt(x)` - If the desired runend is found, returns its relative index in `x`
+    /// * `KeepScanning(x)` - If there is no runend of the desired rank, returns the number of set
+    /// runend bits that were found in this block in `x`.  The caller can use this to presume the
+    /// scan in the next block, minus the number of runends that were found in this one.
+    #[inline]
+    pub fn scan_for_runend(&self, skip_count: usize, rank: usize) -> ScanForRunendResult {
+        match self.runends.bitselect_skip_n(skip_count, rank) {
+            Some(n) => {
+                //Found the bit of the desired rank!
+                ScanForRunendResult::FoundIt(n)
+            }
+            None => {
+                //Did not find it, but check how many were set
+                let runend_count = self.runends.popcnt_skip_n(skip_count);
+                ScanForRunendResult::KeepScanning(runend_count)
+            }
+        }
     }
 }
 
@@ -184,6 +241,23 @@ mod block_tests {
         };
 
         for i in 0..SLOTS_PER_BLOCK {
+            block.set_occupied(i, true);
+        }
+
+        assert_eq!(0xffff_ffff_ffff_ffffu64, block.occupieds);
+        assert_eq!(0x0, block.runends);
+
+        for i in 0..SLOTS_PER_BLOCK {
+            block.set_runend(i, true);
+        }
+
+        assert_eq!(0xffff_ffff_ffff_ffffu64, block.occupieds);
+        assert_eq!(0xffff_ffff_ffff_ffffu64, block.runends);
+
+        block.occupieds = 0;
+        block.runends = 0;
+
+        for i in 0..SLOTS_PER_BLOCK {
             assert_eq!(false, block.is_runend(i));
             assert_eq!(false, block.is_occupied(i));
 
@@ -202,6 +276,81 @@ mod block_tests {
 
             assert_eq!(false, block.is_runend(i));
             assert_eq!(false, block.is_occupied(i));
+        }
+    }
+
+    #[test]
+    pub fn get_occupied_rank_tests() {
+        let mut block: Block = Block {
+            ..Default::default()
+        };
+
+        // All occupied bits are empty now so all slots have the same rank
+        for i in 0..SLOTS_PER_BLOCK {
+            assert_eq!(0, block.get_occupied_rank(i));
+        }
+
+        // Set all the bits and verify they have the expected ranks
+        // the rank computation is inclusive of the index, so an index of 0
+        // will return 1 if the first bit is set
+        block.occupieds = std::u64::MAX;
+
+        for i in 0..SLOTS_PER_BLOCK {
+            assert_eq!(i + 1, block.get_occupied_rank(i));
+        }
+
+        // Verify the correct behavior for the variant that skips some number of bits before
+        // starting to count
+        for i in 0..SLOTS_PER_BLOCK {
+            for j in i..SLOTS_PER_BLOCK {
+                assert_eq!(j - i + 1, block.get_occupied_rank_skip_n(i, j));
+            }
+        }
+    }
+
+    #[test]
+    pub fn scan_for_runend_tests() {
+        // test cases for the scan_for_runend function.
+        //
+        // Layout is:
+        //
+        // (runends_value, skip_count, rank, expected_result)
+        let test_data = [
+            (0u64, 0, 0, ScanForRunendResult::KeepScanning(0)),
+            (0x8000_8001u64, 0, 0, ScanForRunendResult::FoundIt(0)),
+            (0x8000_8001u64, 1, 0, ScanForRunendResult::FoundIt(15)),
+            (0x8000_8001u64, 2, 0, ScanForRunendResult::FoundIt(15)),
+            (0x8000_8001u64, 15, 0, ScanForRunendResult::FoundIt(15)),
+            (0x8000_8001u64, 16, 0, ScanForRunendResult::FoundIt(31)),
+            (0x8000_8001u64, 31, 0, ScanForRunendResult::FoundIt(31)),
+            (0x8000_8001u64, 32, 0, ScanForRunendResult::KeepScanning(0)),
+            (0x8000_8001u64, 0, 1, ScanForRunendResult::FoundIt(15)),
+            (0x8000_8001u64, 0, 2, ScanForRunendResult::FoundIt(31)),
+            (0x8000_8001u64, 0, 3, ScanForRunendResult::KeepScanning(3)),
+            (0x8000_8001u64, 1, 3, ScanForRunendResult::KeepScanning(2)),
+            (0x8000_8001u64, 16, 3, ScanForRunendResult::KeepScanning(1)),
+            (0x8000_8001u64, 32, 3, ScanForRunendResult::KeepScanning(0)),
+            (0xffff_ffffu64, 0, 0, ScanForRunendResult::FoundIt(0)),
+            (0xffff_ffffu64, 1, 0, ScanForRunendResult::FoundIt(1)),
+            (0xffff_ffffu64, 2, 0, ScanForRunendResult::FoundIt(2)),
+            (0xffff_ffffu64, 31, 0, ScanForRunendResult::FoundIt(31)),
+            (0xffff_ffffu64, 32, 0, ScanForRunendResult::KeepScanning(0)),
+        ];
+
+        for (runends_value, skip_count, rank, expected_result) in &test_data {
+            let block = Block {
+                runends: *runends_value,
+                ..Default::default()
+            };
+
+            assert_eq!(
+                *expected_result,
+                block.scan_for_runend(*skip_count, *rank),
+                "scan_for_runend({}, {}) with runends value {:016x} mismatched",
+                skip_count,
+                rank,
+                runends_value
+            );
         }
     }
 }

@@ -25,16 +25,16 @@ pub struct PhysicalData {
 /// The actual C code RSQF implementation makes this less clear, and sometimes uses terms like
 /// `index`, `hash_value`, `slot` interchangeably.
 #[allow(dead_code)] // for now
-type HashValue = u64;
+pub type HashValue = u64;
 
 /// The type which represents the value of the remainder portion of a `HashValue`.  It is these
 /// remainders which are stored in `rbits`-bit slots within the physical data layer.  
 /// Note that the actual number of bits stored and retrieved is not 64 but is determiend by the `rbits` runtime parameter.
-type RemainderValue = u64;
+pub type RemainderValue = u64;
 
 /// The type which contains the "quotient" part of a `HashValue`.  The number of bits used to
 /// actually represent a quotient is computed in higher layers as the parameter `q` or `qbits`.
-type QuotientValue = u64;
+pub type QuotientValue = u64;
 
 #[allow(dead_code)] // just for development
 #[allow(unused_variables)]
@@ -185,12 +185,64 @@ impl PhysicalData {
         //Remember that one invariant of this kind of filter is that the run for a quotient starts
         //either at its home slot, or if that's in use the first free slot after the home slot.
         //That narrows down our search considerably.
+        //
+        //To avoid having to jump around too many places, use the `offset` hint at the start of
+        //this block, which tells us where the runend is for the first slot in that block.
+        //On the off chance the slot we're looking for IS the first slot in the block that's easy
+        //but even if not we can start the search there.
+        let block_runend_offset = self.get_block_offset(block_index);
 
-        // get the offset of this quotient's block.  The offset tells us where to find the runend for the
-        // quotient whose home slot is slot 0 in this block.
-        let block_offset = self.get_block_offset(block_index);
+        /*
+         *if intrablock_index == 0 {
+         *    //This is the easy case; the slot we're looking for is actually the first slot in this
+         *    //block so now we know where its runend is.
+         *    return Some(quotient as usize + block_runend_offset);
+         *}
+         */
 
-        panic!("NYI");
+        //Get the rank of this slot's occupieds bit relative to the start of this block.
+        //This computation correponds to step 1 in figure 2 in the RDSF paper.
+        //
+        //Note the formulation here is a bit different from the paper because it's abstracted to
+        //mathematics and this is burdened with actual implementation.  `get_occupied_rank_skip_n`
+        //masks out the number of bits corresponding to its first parameter, 1 in this case.  This
+        //is because we do not want to include slot 0's occupieds bit in this calculation.
+        let relative_rank = block.get_occupied_rank(intrablock_index);
+        debug_assert!(
+            relative_rank > 0,
+            "quotient {} in block {} slot {} occupieds bit relative rank is 0",
+            quotient,
+            block_index,
+            intrablock_index
+        );
+
+        //Find the runend bit with rank `relative_rank` where that rank is relative to the runend
+        //for the slot 0 of this block.
+        let mut block = block;
+        let mut current_block_index = block_index + (block_runend_offset / block::SLOTS_PER_BLOCK);
+        let mut skip_bits = block_runend_offset % block::SLOTS_PER_BLOCK;
+        let mut runend_rank = relative_rank - 1;
+
+        loop {
+            // scan for the run end AFTER the block slot 0 runend, up to the rank we computed for
+            // the occupieds bit.  This corresponds to step 2 in figure 2 of the RSDF paper.
+            match block.scan_for_runend(skip_bits, runend_rank) {
+                block::ScanForRunendResult::FoundIt(runend_index) => {
+                    //Found the block we were looking for at the specified index!
+                    //This expressoin corresponds to step 3 of figure 2 of the RSDF paper
+                    return Some(current_block_index * block::SLOTS_PER_BLOCK + runend_index);
+                }
+                block::ScanForRunendResult::KeepScanning(skipped_runends) => {
+                    //The runend of the desired rank was not found.  It means the runend we're
+                    //looking for must be in the next block.  Reduce the rank we're looking for
+                    //based on the number we've skipped, and loop again
+                    current_block_index += 1;
+                    skip_bits = 0;
+                    runend_rank -= skipped_runends;
+                    block = self.get_block(current_block_index);
+                }
+            }
+        }
     }
 
     /// Given the index for some slot `index`, assuming that slot is part of some run, figures out
@@ -207,9 +259,6 @@ impl PhysicalData {
     pub fn find_slot_run_end(&self, index: usize) -> Option<usize> {
         panic!("NYI");
     }
-
-    // TODO: Implement may_contain in terms of the blocks.  Need to figure out
-    // how to use `offset` to ensure we're testing the right block's bitfields
 
     /// Given the index of a block, return that block's offset value.  Unlike the name implies,
     /// it's not the offset of the block, it's a pre-computed value of the distance between the
@@ -273,6 +322,8 @@ impl PhysicalData {
         &self.blocks[index]
     }
 
+    /// Does the repetitive and simple math to translate from a slot index to a block index and the
+    /// index within that block where the slot is located.
     #[inline]
     fn get_slot_location(&self, index: usize) -> (usize, usize) {
         let block_index = index / block::SLOTS_PER_BLOCK;
@@ -344,6 +395,99 @@ mod tests {
             assert_eq!(slot_value, pd.get_slot(index));
             assert_eq!(slot_value, pd.set_slot(index, 0));
             assert_eq!(0, pd.get_slot(index));
+        }
+    }
+
+    #[test]
+    pub fn find_quotient_run_end_test() {
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        //Empty data set, there are no runs so no run ends
+        for q in 0..TEST_SLOTS {
+            assert_eq!(None, pd.find_quotient_run_end(q as QuotientValue));
+        }
+
+        let q = 100usize;
+
+        //Simulate a single run in a single slot.
+        {
+            pd.set_occupied(q, true);
+            pd.set_runend(q, true);
+
+            assert_eq!(
+                Some(q as usize),
+                pd.find_quotient_run_end(q as QuotientValue)
+            );
+        }
+
+        //Now let's make not a single slot but a longer run
+        {
+            pd.set_runend(q, false);
+            pd.set_runend(q + 5, true);
+
+            assert_eq!(
+                Some(q as usize + 5),
+                pd.find_quotient_run_end(q as QuotientValue)
+            );
+        }
+
+        // clean up the bits
+        pd.set_occupied(q, false);
+        pd.set_runend(q, false);
+
+        //Let's test another corner case; the run is exactly on the start of a block.  In that case
+        //we will use the block's `offset` value as a shortcut to spare the effort of looking at
+        //runends.
+        let q = 5 * block::SLOTS_PER_BLOCK;
+        pd.blocks[q / block::SLOTS_PER_BLOCK].set_offset(13);
+        pd.set_occupied(q, true);
+        pd.set_runend(q + 13, true);
+
+        assert_eq!(Some(q + 13), pd.find_quotient_run_end(q as QuotientValue));
+
+        //Simulate a pathological edge case: every slot is occupied and contains a single-slot run.
+        pd.blocks[q / block::SLOTS_PER_BLOCK].set_offset(0);
+        for q in 0..TEST_SLOTS {
+            pd.set_occupied(q, true);
+            pd.set_runend(q, true);
+        }
+
+        for q in 0..TEST_SLOTS {
+            assert_eq!(
+                Some(q),
+                pd.find_quotient_run_end(q as QuotientValue),
+                "slot {} should be its own run end but it's not",
+                q
+            );;
+        }
+    }
+
+    #[test]
+    pub fn find_quotient_run_end_torture_test() {
+        //Test all possible variations of occupied/runend configuration where only one run exists
+        //in the filter
+        const NSLOTS: usize = 512; //this is too exhaustive a test to use the normal test size
+        let mut pd = PhysicalData::new(NSLOTS, TEST_RBITS);
+        for occupied in 0..NSLOTS {
+            pd.set_occupied(occupied, true);
+
+            for runend in occupied..NSLOTS {
+                pd.set_runend(runend, true);
+
+                assert_eq!(
+                    Some(runend),
+                    pd.find_quotient_run_end(occupied as QuotientValue),
+                    "occupied at slot {}, runend at slot {}",
+                    occupied,
+                    runend
+                );
+
+                //clean up runend
+                pd.set_runend(runend, false);
+            }
+
+            //clean up occupied
+            pd.set_occupied(occupied, false);
         }
     }
 
