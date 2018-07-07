@@ -117,29 +117,35 @@ impl PhysicalData {
     /// to the quotient `index`; it could contain a run for an lower quotient value if values have
     /// shifted), determines the slot index where that run ends.
     #[inline]
-    pub fn find_run_end_shitty(&self, index: usize) -> usize {
+    pub fn find_run_end(&self, index: usize) -> usize {
         //This corresponds to the cqf.c function run_end
-        let (slot_block_index, slot_intrablock_index) = self.get_slot_location(index);
-        let block_offset = self.get_block_offset(slot_block_index);
+        let (block_index, intrablock_index) = self.get_slot_location(index);
+        let block = self.get_block(block_index);
+        let block_offset = self.get_block_offset(block_index);
 
         // within this block, find the rank of `index` slot's bit in the `occupied` bitmap.
         // Note that this `occupied` bitmap only covers the range of 64 slots in this block it's
         // not global
         //
-        // Recall that "rank" means the number of 1 buts up to the specified bit (inclusive)
-        let slot_intrablock_rank =
-            self.blocks[slot_block_index].get_occupied_rank(slot_intrablock_index);
-        if slot_intrablock_rank == 0 {
-            // the quotient whose 'home slot' is `index` is not stored in the filter, as we can
-            // tell from the `occupieds` bitmap that we just tested.  It's still possible that
-            // `index` is being used to store remainders in a run from a lower quotient value...
-            if block_offset <= slot_intrablock_index {
+        // Recall that "rank" means the number of 1 buts up to the specified bit (inclusive).  So
+        // the question being asked by this operation is "how many occupied slots are there in this
+        // block up to and including `slot_block_index`?
+        let intrablock_rank = block.get_occupied_rank(intrablock_index);
+        if intrablock_rank == 0 {
+            //the rank of this index in the `occupieds` bitmap is 0, that means there are no
+            //occupied slots in this block up to and includng `slot_intrablock_index`.
+            //
+            //This could mean that slot `slot_intrablock_index` is unused completely, or it could
+            //mean it's used as part of a run that started prior to this block.  (If it were part
+            //of a run that started in THIS block, there would be at least one `occupieds` bit set
+            //but recall the rank is 0).
+            if block_offset <= intrablock_index {
                 // `block_offset` is how far from slot 0 of this block is the run end corresponding
-                // to that slot 0.  It's less than the index of this slot in the block.
-                // The C code uses this to determine that the run end for `index` is itself.
-                // I can't explain that.  What if this is the 63rd slot in a block, and between
-                // `block_offset` and this slot is the start of another run that goes on for
-                // multiple blocks?
+                // to that slot 0.  It's less than the index of this slot in the block.  That means
+                // if there is a run which starts in a previous block and ends in this one, it ends
+                // before this slot.  Since there are no occupied slots (and thus, no runs) in this
+                // block up to `slot_block_index`, that means this slot is unused completely.
+                // We indicate that by returning the index itself.
                 return index;
             } else {
                 //THis is the less common case.
@@ -152,14 +158,104 @@ impl PhysicalData {
                 //slots in this block up to slot_intrablock_index and beyond.  But remember, in
                 //this method we're trying to find where the end of the run containing this slot
                 //is, and this `block_offset` has helpfully told us:
-                return block::SLOTS_PER_BLOCK * slot_block_index + block_offset - 1;
+                //
+                //NB POSSIBLE BUG: In the C code, this expression includes a ` - 1` and the end.  I
+                //don't understand why.  `block_offset` is the distance to the end of the run; for
+                //cases where the run is only 1 element long, it's 0.  We're returning the location
+                //of the run end, not the location right before it, so why the " -1"?  In my tests
+                //based on my logical undersatnding of the filter this produces incorrect results,
+                //so I'm not using ' - 1' though I fear I'm just patching around some other
+                //misunderstanding.
+                return block::SLOTS_PER_BLOCK * block_index + block_offset;
             }
         }
 
-        //The easy path has been exhausted; there are definitely SOME occupied slots in this block
-        //up to or including the slot we're asking about.  Need to figure out where the run
-        //correspondign to our particular slot is, and thereby where the run ends.
-        panic!("NYI");
+        //Now we know there is at least one run in this block (because the `occupieds` rank for
+        //this slot is non-zero), we need to figure out where the runends are and thereby determine
+        //if this slot is part of such a run or not.
+        //
+        //To avoid having to jump around too many places, use the `offset` hint at the start of
+        //this block, which tells us where the runend is for the first slot in that block.
+        //On the off chance the slot we're looking for IS the first slot in the block that's easy
+        //but even if not we can start the search there.
+        //
+        //Thanks to `block_offset` we know how many slots from slot 0 in this block is the
+        //runend for the run which includes slot 0.  That's an optimization that let's us skip
+        //ahead to where we're likely to find the runend we're interested in.  The concept here is
+        //a bit heady.
+        //
+        //We know that whereever our runend is will be indicated by a bit set in the `runends`
+        //bitmap corresponding to that slot containing the runend.  We know that slot 0 in this
+        //block has a runend at `block_offset` slots ahead of itself (note this can and
+        //often is zero, but the solution generalizes).  We also know from the structure invariants
+        //that the runend for our slot `index` will not be before the runend for the first slot in
+        //our block.
+        //
+        //Thus, we compute which block (possibly this one or a subsequent one) contains the runend
+        //for slot 0 of this block, and mask out any runend bits between here and there.  Having
+        //masked them out, we then scan forward from slot 0's runend, looking for the runend that
+        //corresponds to the rank of our slot's bit in the `occupieds` bitmap.  If you don't
+        //understand that relationship between `occupieds` and `runends` re-read the RSDF paper.
+        //
+        //Something that confused me was why do we set `runend_rank` to `intrablock_rank - 1` and not
+        //`intrablock_rank`.  After all, the paper clearly shows that we use `RANK` to find the rank
+        //of the slot in the `occupieds` bitmap and then `SELECT` to find the `RANK`-th bit in the
+        //`runends` bitmap.  What the paper doesn't make so clear is that `SELECT`'s parameter
+        //isn't a rank, it's an ordinal.  `SELECT(0)` selects the first set bit (just like the
+        //first element in an array is at index 0).  So if we have a bit with rank 1, and we want
+        //to use `SELECT` to find the 1st set bit, we do `SELECT(0)` not `SELECT(1)`.
+        let mut runend_rank = intrablock_rank - 1;
+        let mut current_block_index = block_index + (block_offset / block::SLOTS_PER_BLOCK);
+        let mut block = self.get_block(current_block_index);
+
+        //skipping all bits which are part of the slot 0 run since we know we come after those.
+        //it's possible there are some set bits there which correspond to the ends of some earlier
+        //run, which will confuse this computation.  we know our runend is at or after slot 0's
+        //runend so we start looking from there.
+        let mut skip_bits = block_offset % block::SLOTS_PER_BLOCK;
+
+        loop {
+            // scan for the run end AFTER the block slot 0 runend, up to the rank we computed for
+            // the occupieds bit.  This corresponds to step 2 in figure 2 of the RSDF paper.
+            match block.scan_for_runend(skip_bits, runend_rank) {
+                block::ScanForRunendResult::FoundIt(runend_index) => {
+                    //Found the block we were looking for at the specified index!
+                    //This expressoin corresponds to step 3 of figure 2 of the RSDF paper
+                    let runend = current_block_index * block::SLOTS_PER_BLOCK + runend_index;
+
+                    //What we've found here is the runend that corresponds to the `occupieds` bit
+                    //at or slightly before `index`.  This doesn't tell us that `index` is actually
+                    //part of any run.  If `index` is part of this run we will know by comparing
+                    //its position with the run end.  If it's not part of a run, we indicate that
+                    //in this method by returning the index itself.
+                    if runend >= index {
+                        //Yup, it's part of a run
+                        return runend;
+                    } else {
+                        //This index is after that run ends
+                        return index;
+                    }
+                }
+                block::ScanForRunendResult::KeepScanning(skipped_runends) => {
+                    //The runend of the desired rank was not found.  It means the runend we're
+                    //looking for must be in the next block.  Reduce the rank we're looking for
+                    //based on the number we've skipped, and loop again
+                    current_block_index += 1;
+                    skip_bits = 0;
+                    runend_rank -= skipped_runends;
+
+                    //If there's an invalid structure such that there are more `occupieds` than
+                    //`runends` or some `runends` come before their corresponding `occupieds` this
+                    //will run past the end of the list here.  That always indicates a bug
+                    //somewhere; it means the invariants have been violated
+                    debug_assert!(current_block_index < self.blocks.len(),
+                        "fatal integrity error: looking for run end of index {} scanned past the end of the blocks structure and did not find run end", 
+                        index);
+
+                    block = self.get_block(current_block_index);
+                }
+            }
+        }
     }
 
     /// Given a quotient value `quotient` (in the paper this is `h0(x)` or sometimes `q`) attempts
@@ -178,61 +274,8 @@ impl PhysicalData {
             return None;
         }
 
-        //Now we know the quotient has at least one and possibly multiple remainders.  The question
-        //is where.  For filters that are mostly empty, it's likely this quotient's run of
-        //remainders starts at the quotient's home slot, but as the filter fills up that becomes
-        //less likely.  We will start by looking at the block containing this quotient's home slot.
-        //Remember that one invariant of this kind of filter is that the run for a quotient starts
-        //either at its home slot, or if that's in use the first free slot after the home slot.
-        //That narrows down our search considerably.
-        //
-        //To avoid having to jump around too many places, use the `offset` hint at the start of
-        //this block, which tells us where the runend is for the first slot in that block.
-        //On the off chance the slot we're looking for IS the first slot in the block that's easy
-        //but even if not we can start the search there.
-        let block_runend_offset = self.get_block_offset(block_index);
-
-        //Get the rank of this slot's occupieds bit relative to the start of this block.
-        //This computation correponds to step 1 in figure 2 in the RDSF paper.
-        let relative_rank = block.get_occupied_rank(intrablock_index);
-
-        //We know this slot is occupied, so there the rank of its corresponding occupieds bit
-        //should be at least 1 or something's gone dreadfully wrong
-        debug_assert!(
-            relative_rank > 0,
-            "quotient {} in block {} slot {} occupieds bit relative rank is 0",
-            quotient,
-            block_index,
-            intrablock_index
-        );
-
-        //Find the runend bit with rank `relative_rank` where that rank is relative to the runend
-        //for the slot 0 of this block.
-        let mut block = block;
-        let mut current_block_index = block_index + (block_runend_offset / block::SLOTS_PER_BLOCK);
-        let mut skip_bits = block_runend_offset % block::SLOTS_PER_BLOCK;
-        let mut runend_rank = relative_rank - 1;
-
-        loop {
-            // scan for the run end AFTER the block slot 0 runend, up to the rank we computed for
-            // the occupieds bit.  This corresponds to step 2 in figure 2 of the RSDF paper.
-            match block.scan_for_runend(skip_bits, runend_rank) {
-                block::ScanForRunendResult::FoundIt(runend_index) => {
-                    //Found the block we were looking for at the specified index!
-                    //This expressoin corresponds to step 3 of figure 2 of the RSDF paper
-                    return Some(current_block_index * block::SLOTS_PER_BLOCK + runend_index);
-                }
-                block::ScanForRunendResult::KeepScanning(skipped_runends) => {
-                    //The runend of the desired rank was not found.  It means the runend we're
-                    //looking for must be in the next block.  Reduce the rank we're looking for
-                    //based on the number we've skipped, and loop again
-                    current_block_index += 1;
-                    skip_bits = 0;
-                    runend_rank -= skipped_runends;
-                    block = self.get_block(current_block_index);
-                }
-            }
-        }
+        // Quotient is occupied, so find its runend
+        Some(self.find_run_end(quotient as usize))
     }
 
     #[inline]
@@ -302,21 +345,6 @@ impl PhysicalData {
     #[inline]
     pub fn is_slot_empty(&self, index: usize) -> bool {
         self.get_slot_runlength_lower_bound(index) == 0
-    }
-
-    /// Given the index for some slot `index`, assuming that slot is part of some run, figures out
-    /// the index of the run end (that is, the last slot that is part of the same run) for that
-    /// slot.
-    ///
-    /// Importantly, this is diffrent from the `find_quotient_run_end` above in that the
-    /// `find_quotient_run_end` specifies a specific quotient of interest, and finds the run for
-    /// that quotient wherever in the slots it is, then computes its run end.  This method doesn't
-    /// care what quotient any of the runs correspond to; this slot is presumed to be part of a
-    /// run, and it finds that end.  Higher level code that this is needed to figure out which
-    /// quotient this run belongs to.
-    #[inline]
-    pub fn find_slot_run_end(&self, index: usize) -> Option<usize> {
-        panic!("NYI");
     }
 
     /// Given the index of a block, return that block's offset value.  Unlike the name implies,
@@ -464,6 +492,66 @@ mod tests {
             assert_eq!(slot_value, pd.get_slot(index));
             assert_eq!(slot_value, pd.set_slot(index, 0));
             assert_eq!(0, pd.get_slot(index));
+        }
+    }
+
+    #[test]
+    pub fn find_run_end_tests() {
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        //find_run_end has some complicated logic which requires some complicated set up in order
+        //to test.  Buckle up.
+
+        //Structure is empty, every slot should be its own runend as none of them are actually part
+        //of runs.
+        for index in 0..TEST_SLOTS {
+            assert_eq!(index, pd.find_run_end(index));
+        }
+
+        //Single slot is occupied and its own runend.  All other slots unused.
+        const TEST_SLOT: usize = 100;
+        pd.set_occupied(TEST_SLOT, true);
+        pd.set_runend(TEST_SLOT, true);
+        for index in 0..TEST_SLOTS {
+            assert_eq!(index, pd.find_run_end(index), "index {}", index);
+        }
+
+        //Single slot occupied, run is longer than one slot
+        pd.set_runend(TEST_SLOT, false);
+        pd.set_runend(TEST_SLOT + 5, true);
+        for index in 0..TEST_SLOTS {
+            if index >= TEST_SLOT && index <= TEST_SLOT + 5 {
+                assert_eq!(TEST_SLOT + 5, pd.find_run_end(index), "index {}", index);
+            } else {
+                assert_eq!(index, pd.find_run_end(index), "index {}", index);
+            }
+        }
+
+        //Single run spans a block
+        //This is complex enough let's start with a fresh structure
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        const RUN_LENGTH: usize = 1000; //this spans multiple blocks and overflows the u8 offset field
+        const RUN_END: usize = TEST_SLOT + RUN_LENGTH - 1;
+        pd.set_occupied(TEST_SLOT, true);
+        pd.set_runend(RUN_END, true);
+        let mut block_index = (TEST_SLOT + block::SLOTS_PER_BLOCK - 1) / block::SLOTS_PER_BLOCK;
+        loop {
+            let block_offset = RUN_END - block_index * block::SLOTS_PER_BLOCK;
+            pd.blocks[block_index].set_offset(block_offset);
+            println!("block {} has offset {}", block_index, block_offset);
+            block_index += 1;
+            if block_index > RUN_END / block::SLOTS_PER_BLOCK {
+                break;
+            }
+        }
+
+        for index in 0..TEST_SLOTS {
+            if index >= TEST_SLOT && index <= RUN_END {
+                assert_eq!(RUN_END, pd.find_run_end(index), "index {}", index);
+            } else {
+                assert_eq!(index, pd.find_run_end(index), "index {}", index);
+            }
         }
     }
 
