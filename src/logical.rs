@@ -45,12 +45,46 @@ impl LogicalData {
     pub fn contains(&self, quotient: QuotientValue, remainder: RemainderValue) -> bool {
         // If the occupied bit for this quotient isn't set then there's no way this combination of
         // values are present
-        panic!("NYI");
-        //if !self.physical.is_occupied(quotient) {
-        //return false;
-        //}
+        match self.physical.find_quotient_run_end(quotient) {
+            Some(run_end) => {
+                //Quotient is occupied and we have the index of its run end.  We don't actually
+                //know where its run starts; it could be at its home slot `quotient` or if that was
+                //in use it could be at another higher slot, but never a lower slot.  To find this
+                //remainder we simply scan backwards from the runend until we encounter the
+                //quotient's home slot, or another slot that is a runend.
+                self.physical
+                    .scan_for_remainder(run_end, quotient as usize, remainder)
+                    .is_some()
+            }
+            None => false,
+        }
     }
 }
 
 #[cfg(test)]
-mod logicaldata_tests {}
+mod logicaldata_tests {
+    const TEST_SLOTS: usize = 1024 * 64;
+    const TEST_RBITS: usize = 9;
+
+    use super::*;
+
+    #[test]
+    fn contains_tests() {
+        let ld = LogicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        for quotient in 0..TEST_SLOTS {
+            assert_eq!(
+                false,
+                ld.contains(quotient as QuotientValue, 0 as RemainderValue)
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn contains_panic_on_out_of_range() {
+        let ld = LogicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        ld.contains(TEST_SLOTS as QuotientValue, 0);
+    }
+}

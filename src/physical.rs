@@ -192,22 +192,12 @@ impl PhysicalData {
         //but even if not we can start the search there.
         let block_runend_offset = self.get_block_offset(block_index);
 
-        /*
-         *if intrablock_index == 0 {
-         *    //This is the easy case; the slot we're looking for is actually the first slot in this
-         *    //block so now we know where its runend is.
-         *    return Some(quotient as usize + block_runend_offset);
-         *}
-         */
-
         //Get the rank of this slot's occupieds bit relative to the start of this block.
         //This computation correponds to step 1 in figure 2 in the RDSF paper.
-        //
-        //Note the formulation here is a bit different from the paper because it's abstracted to
-        //mathematics and this is burdened with actual implementation.  `get_occupied_rank_skip_n`
-        //masks out the number of bits corresponding to its first parameter, 1 in this case.  This
-        //is because we do not want to include slot 0's occupieds bit in this calculation.
         let relative_rank = block.get_occupied_rank(intrablock_index);
+
+        //We know this slot is occupied, so there the rank of its corresponding occupieds bit
+        //should be at least 1 or something's gone dreadfully wrong
         debug_assert!(
             relative_rank > 0,
             "quotient {} in block {} slot {} occupieds bit relative rank is 0",
@@ -241,6 +231,66 @@ impl PhysicalData {
                     runend_rank -= skipped_runends;
                     block = self.get_block(current_block_index);
                 }
+            }
+        }
+    }
+
+    #[inline]
+    /// Given a range of slots from `home_slot` up to and including `run_end`, scans backwards from
+    /// `run_end` looking for `remainder`.  Stops after checking `home_slot` or upon reaching a
+    /// slot with its `runends` bit set.
+    ///
+    /// # Returns
+    ///
+    /// `Some(index)` where `index` is the slot where `remainder` was found, or...
+    /// `None` if `remainder` is not found
+    pub fn scan_for_remainder(
+        &self,
+        run_end: usize,
+        home_slot: usize,
+        remainder: RemainderValue,
+    ) -> Option<usize> {
+        // we assume home_slot comes at or before run_end
+        debug_assert!(
+            home_slot <= run_end,
+            "home_slot 0x{:x} cannot be after run_end 0x{:x}!",
+            home_slot,
+            run_end
+        );
+        // we are assuming that `remainder` doesn't have any values in the bits higher than `rbits`
+        debug_assert!(
+            remainder & !bitmask!(self.rbits) == 0,
+            "remainder 0x{:x} has bits set above {}",
+            remainder,
+            self.rbits
+        );
+        let (mut block_index, mut intrablock_index) = self.get_slot_location(run_end);
+        let (home_block_index, home_intrablock_index) = self.get_slot_location(home_slot);
+        let mut block = self.get_block(block_index);
+
+        loop {
+            if block.get_slot(self.rbits, intrablock_index) == remainder {
+                return Some(block_index * block::SLOTS_PER_BLOCK + intrablock_index);
+            }
+
+            //Not found at this slot.
+            //Stop the search if this was the home slot
+            if block_index == home_block_index && intrablock_index == home_intrablock_index {
+                return None;
+            }
+
+            //Move back one slot
+            if intrablock_index > 0 {
+                intrablock_index -= 1;
+            } else {
+                block_index -= 1;
+                block = self.get_block(block_index);
+                intrablock_index = block::SLOTS_PER_BLOCK;
+            }
+
+            //Stop if we've reached another run end, otherwise keep scanning
+            if block.is_runend(intrablock_index) {
+                return None;
             }
         }
     }
@@ -313,7 +363,7 @@ impl PhysicalData {
     /// result in a dangling pointer.
     #[inline]
     fn get_block<'s: 'block, 'block>(&'s self, index: usize) -> &'block block::Block {
-        assert!(
+        debug_assert!(
             index < self.blocks.len(),
             "block index {} is out of bounds",
             index
@@ -489,6 +539,39 @@ mod tests {
             //clean up occupied
             pd.set_occupied(occupied, false);
         }
+    }
+
+    #[test]
+    pub fn scan_for_remainder_tests() {
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+        const REMAINDER: RemainderValue = 0x1fe;
+        const REMAINDER_SLOT: usize = 100;
+
+        //Scan should stop at the home slot if not found
+        //Since the structure is empty now nothing will ever be found
+        assert_eq!(None, pd.scan_for_remainder(TEST_SLOTS - 1, 0, REMAINDER));
+
+        //Insert the remainder value in some place before the home_slot to make sure its not found
+        pd.set_slot(REMAINDER_SLOT, REMAINDER);
+        assert_eq!(
+            None,
+            pd.scan_for_remainder(TEST_SLOTS - 1, REMAINDER_SLOT + 1, REMAINDER)
+        );
+
+        //But if we move the home slot back one, to the slot containing the remainder, it should be
+        //found
+        assert_eq!(
+            Some(REMAINDER_SLOT),
+            pd.scan_for_remainder(TEST_SLOTS - 1, REMAINDER_SLOT, REMAINDER)
+        );
+
+        //Now set a runend bit somewhere where the remainder is located.  That
+        //should also cause the stop without finding the remainder
+        pd.set_runend(REMAINDER_SLOT, true);
+        assert_eq!(
+            None,
+            pd.scan_for_remainder(TEST_SLOTS - 1, REMAINDER_SLOT, REMAINDER)
+        );
     }
 
     #[test]
