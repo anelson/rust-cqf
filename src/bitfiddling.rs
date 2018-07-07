@@ -84,6 +84,57 @@ pub trait BitFiddling {
     /// Returns None if there are fewer than rank+1 1s after `skip_bits`.
     #[inline]
     fn bitselect_skip_n(self, skip_bits: usize, rank: usize) -> Option<usize>;
+
+    /// Shifts the word left by `shift_bits` bits, inserting the lowest `shift_bits` bits of
+    /// `shift_value` into the lowest bits of the word.  
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple containing two elements:
+    ///
+    /// * `result` - The new value of this word after applying the shift operation
+    /// * `shifted_value` - The top `shift_bits` of `self` which were pushed out of the word by the
+    /// shift operation.  Note that these bits are not returned in their original position, they
+    /// are returned in another word having been shifted right so they start at bit 0.
+    #[inline]
+    fn shift_into(self, shift_bits: usize, shift_value: Self) -> (Self, Self)
+    where
+        Self: Sized;
+
+    /// Specialized version of `shift_info` that operates on only a subset of bits in the word.
+    ///
+    /// `shift_into()` is equivalent to `shift_into_partial` with `start_bit` equal to `0` and
+    /// `count_bits` equal to the number of bits in the word.
+    ///
+    /// # Arguments
+    ///
+    /// `start_bit` - The 0-based index in this word of the bit at which to start the shift
+    /// operation.  Any bits prior to this are unmodified by the shift.
+    /// `count_bits` - The number of bits to include in the shift operation.  Must be an integer
+    /// multiple of `shift_bits`.  Any bits in the word after `start_bit+count_bits` are unmodified
+    /// by the shift.
+    /// `shift_bits` - The number of bits by which to shift the word's contents bitwise left
+    /// `shift_value` - The `shift_bits`-bit value which will be placed in the region of the word
+    /// which was vacated by the shfit operation.  That region will start at `start_bit`
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple containing two elements:
+    ///
+    /// * `result` - The new value of this word after applying the shift operation
+    /// * `shifted_value` - The top `shift_bits` of `self` which were pushed out of the word by the
+    /// shift operation.  Note that these bits are not returned in their original position, they
+    /// are returned in another word having been shifted right so they start at bit 0.
+    #[inline]
+    fn shift_into_partial(
+        self,
+        start_bit: usize,
+        count_bits: usize,
+        shift_bits: usize,
+        shift_value: Self,
+    ) -> (Self, Self)
+    where
+        Self: Sized;
 }
 
 impl BitFiddling for u64 {
@@ -158,6 +209,44 @@ impl BitFiddling for u64 {
     #[inline]
     fn bitselect_skip_n(self, skip_bits: usize, rank: usize) -> Option<usize> {
         (self & !bitmask!(skip_bits)).bitselect(rank)
+    }
+
+    #[inline]
+    #[allow(unused_variables)]
+    fn shift_into(self, shift_bits: usize, shift_value: Self) -> (Self, Self) {
+        debug_assert!((shift_value & !bitmask!(shift_bits)) == 0);
+
+        //This simpler variant of shift_into is easy because it shifts the entire word
+        let new_word = (self << shift_bits) | shift_value;
+        let shifted_value = self >> 64 - shift_bits;
+
+        (new_word, shifted_value)
+    }
+
+    #[inline]
+    fn shift_into_partial(
+        self,
+        start_bit: usize,
+        count_bits: usize,
+        shift_bits: usize,
+        shift_value: Self,
+    ) -> (Self, Self) {
+        debug_assert!((shift_value & !bitmask!(shift_bits)) == 0);
+        debug_assert!(start_bit + count_bits <= 64);
+        debug_assert!(count_bits > 0);
+        debug_assert!(count_bits % shift_bits == 0);
+        //This is much more complicated because it's operating on a subset of the whole word.
+        //First let's mask out just the subset that we're operating on:
+        let mask = bitmask!(count_bits) << start_bit;
+        let working_word = self & mask;
+        let unmodified_word = self & !mask;
+
+        let new_word =
+            unmodified_word | (working_word << shift_bits & mask) | (shift_value << start_bit);
+        let shifted_value =
+            (working_word >> (start_bit + count_bits - shift_bits)) & bitmask!(shift_bits);
+
+        (new_word, shifted_value)
     }
 }
 
@@ -307,5 +396,47 @@ mod test {
         assert_eq!(Some(0), val.bitselect_skip_n(0, 0));
         assert_eq!(Some(4), val.bitselect_skip_n(1, 0));
         assert_eq!(None, val.bitselect_skip_n(12, 0));
+    }
+
+    #[test]
+    fn shift_into_test() {
+        assert_eq!((0, 0), 0x0.shift_into(9, 0));
+        assert_eq!(
+            (0xffee_eedd_ddcc_cc00, 0),
+            0x00ff_eeee_dddd_cccc.shift_into(8, 0)
+        );
+        assert_eq!(
+            (0xffee_eedd_ddcc_cc00, 0xff),
+            0xffff_eeee_dddd_cccc.shift_into(8, 0)
+        );
+        assert_eq!(
+            (0xfffe_eeed_dddc_ccca, 0x0f),
+            0xffff_eeee_dddd_cccc.shift_into(4, 0x0a)
+        );
+    }
+
+    #[test]
+    fn shift_into_partial_test() {
+        //THis is a very fussy method.  Testing it might seem tricky.
+        const START_BIT: usize = 8;
+        const COUNT_BITS: usize = 48;
+        const TEST_WORD: u64 = 0xffff_eeee_dddd_cccc;
+
+        assert_eq!((0, 0), 0x0.shift_into_partial(START_BIT, COUNT_BITS, 8, 0));
+
+        //when start_bits is 0 and count_bits is 64 this is the same as shift_info
+        assert_eq!(
+            (0xffee_eedd_ddcc_cc00, 0xff),
+            TEST_WORD.shift_into_partial(0, 64, 8, 0)
+        );
+
+        assert_eq!(
+            (0xffee_eedd_ddcc_00cc, 0xff),
+            TEST_WORD.shift_into_partial(START_BIT, COUNT_BITS, 8, 0)
+        );
+        assert_eq!(
+            (0xffee_dddd_ccaa_aacc, 0xffee),
+            TEST_WORD.shift_into_partial(START_BIT, COUNT_BITS, 16, 0xaaaa)
+        );
     }
 }
