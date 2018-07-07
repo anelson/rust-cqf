@@ -73,12 +73,22 @@ impl Block {
         }
     }
 
-    /// Given the index of a slot, computes not the actual offset of its run end, but the lower
-    /// bound on that offset.  I don't understand why this is used, it comes from the
-    /// `offset_lower_bound` function in the C implementation.  Perhaps this is more efficient than
-    /// computing the actual end of the run?
+    /// Given the index of a slot, attempts to compute the length of the run starting at `index`.
+    /// I a write "attempts" because this avoids any complex computations and computes a lower
+    /// bound on the length of the run.  The run might be longer than this method computes, but it
+    /// will never be shorter.
+    ///
+    /// # Returns
+    ///
+    /// The remaining length of the run of which `relative_index` is one element.  This length
+    /// includes `relative_index`, so if there is a run with a single element at `relative_index`,
+    /// this method returns `1`.  If `relative_index` is unused, returns `0`.
+    ///
+    /// # Remarks
+    ///
+    /// This corresponds to the `cqf.c` function `offset_lower_bound`.
     #[inline]
-    pub fn get_slot_offset_lower_bound(&self, relative_index: usize) -> usize {
+    pub fn get_slot_runlength_lower_bound(&self, relative_index: usize) -> usize {
         debug_assert!(relative_index < SLOTS_PER_BLOCK);
 
         //NB: In cqf.c the function offset_lower_bound operates on a slot index, but in the body
@@ -86,19 +96,24 @@ impl Block {
         //the Block structure's fields are private, it's more convenient to implement this here
         let block_offset = self.offset as usize; //NB: this isn't decoded; it could be MAX
 
-        //Get the occupieds bit fields only up to this slot plus one more (don't know why +1)
+        //Get the occupieds bit fields only up to this slot.  The `+ 1` here is because bitmask!
+        //takes as a parameter the number of bits to set, so `relative_index = 0` would mean we get
+        //a bitmask of all zeros, but that's not what we want, we want to mask out all occupied
+        //bits up to and including `relative_index`
         let occupieds = self.occupieds & bitmask!(relative_index + 1);
 
         if block_offset <= relative_index {
             //the run for the slot at the start of this block ends either before the slot at
             //`relative_index` or at it, but not past it.
-            //count the runends after the runend at block_offset, up to and including
-            //relative_index
+            //count the runends after the runend at block_offset, up to but not including
             let runends = (self.runends & bitmask!(relative_index)) >> block_offset;
 
             //the lower bound offset is the number of occupied slots up to `relative_index` in this
             //block, minus the number of runends between the runend at block_offset and
-            //`relative_index`.  I can't explain why this is the lower offset bound.
+            //`relative_index`.  The idea here is that we count `occupieds` bits up to and including
+            //this index, but `runends` bits up to but NOT including this index.  So if this index
+            //is occupied, and it is its own runend (meaning run length of 1), this method returns
+            //1.
             occupieds.popcnt() - runends.popcnt()
         } else {
             //else the runend for the first slot in this block is after `relative_index` so the

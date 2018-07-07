@@ -285,7 +285,7 @@ impl PhysicalData {
             } else {
                 block_index -= 1;
                 block = self.get_block(block_index);
-                intrablock_index = block::SLOTS_PER_BLOCK;
+                intrablock_index = block::SLOTS_PER_BLOCK - 1;
             }
 
             //Stop if we've reached another run end, otherwise keep scanning
@@ -293,6 +293,15 @@ impl PhysicalData {
                 return None;
             }
         }
+    }
+
+    /// Given the index of a slot `index`, tests if that slot is empty.  Note that "empty" does not
+    /// just mean "no quotient with home slot `index` has been inserted in the filter", it means
+    /// "slot `index` is not part of any run for any quotient".  In other words it means the slot
+    /// can be used to store a value.
+    #[inline]
+    pub fn is_slot_empty(&self, index: usize) -> bool {
+        self.get_slot_runlength_lower_bound(index) == 0
     }
 
     /// Given the index for some slot `index`, assuming that slot is part of some run, figures out
@@ -349,14 +358,24 @@ impl PhysicalData {
         }
     }
 
-    /// Given the index of a slot, computes not the actual offset of its run end, but the lower
-    /// bound on that offset.  I don't understand why this is used, it comes from the
-    /// `offset_lower_bound` function in the C implementation.  Perhaps this is more efficient than
-    /// computing the actual end of the run?
+    /// Given the index of a slot, attempts to compute the length of the run starting at `index`.
+    /// I a write "attempts" because this avoids any complex computations and computes a lower
+    /// bound on the length of the run.  The run might be longer than this method computes, but it
+    /// will never be shorter.
+    ///
+    /// # Returns
+    ///
+    /// The remaining length of the run of which `index` is one element.  This length
+    /// includes `index`, so if there is a run with a single element at `index`,
+    /// this method returns `1`.  If `index` is unused, returns `0`.
+    ///
+    /// # Remarks
+    ///
+    /// This corresponds to the `cqf.c` function `offset_lower_bound`.
     #[inline]
-    fn get_slot_offset_lower_bound(&self, index: usize) -> usize {
+    fn get_slot_runlength_lower_bound(&self, index: usize) -> usize {
         let (slot_block_index, slot_intrablock_index) = self.get_slot_location(index);
-        self.blocks[slot_block_index].get_slot_offset_lower_bound(slot_intrablock_index)
+        self.blocks[slot_block_index].get_slot_runlength_lower_bound(slot_intrablock_index)
     }
 
     /// Gets an immutable reference to a block.  Using Rust lifetime trickery ensures this doesn't
@@ -572,6 +591,59 @@ mod tests {
             None,
             pd.scan_for_remainder(TEST_SLOTS - 1, REMAINDER_SLOT, REMAINDER)
         );
+    }
+
+    #[test]
+    pub fn get_slot_runlength_lower_bound_test() {
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        //Initially all slots are empty and all have 0 run length lower bound
+        for index in 0..TEST_SLOTS {
+            assert_eq!(0, pd.get_slot_runlength_lower_bound(index));
+        }
+
+        //If the slot is occupied and its runend is in the same slot (run length of 1 element) the
+        //run length lower bound should be 1, and all the other slots 0
+        const TEST_SLOT: usize = 100;
+        pd.set_occupied(TEST_SLOT, true);
+        pd.set_runend(TEST_SLOT, true);
+
+        for index in 0..TEST_SLOTS {
+            if index != TEST_SLOT {
+                assert_eq!(0, pd.get_slot_runlength_lower_bound(index));
+            } else {
+                assert_eq!(1, pd.get_slot_runlength_lower_bound(index));
+            }
+        }
+
+        //If all slots contain single element runs they should all have run length lower bound 1
+        for index in 0..TEST_SLOTS {
+            pd.set_occupied(index, true);
+            pd.set_runend(index, true);
+        }
+
+        for index in 0..TEST_SLOTS {
+            assert_eq!(1, pd.get_slot_runlength_lower_bound(index));
+        }
+
+        //start again with a fresh structure
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        //Here's a run that starts at the beginning of a block, and finishes at the end of the
+        //block.
+        const BLOCK_INDEX: usize = TEST_SLOT / block::SLOTS_PER_BLOCK;
+        pd.set_occupied(BLOCK_INDEX * block::SLOTS_PER_BLOCK, true);
+        pd.set_runend(
+            BLOCK_INDEX * block::SLOTS_PER_BLOCK + block::SLOTS_PER_BLOCK - 1,
+            true,
+        );
+        pd.blocks[BLOCK_INDEX].set_offset(block::SLOTS_PER_BLOCK - 1);
+        for index in 0..block::SLOTS_PER_BLOCK {
+            assert_eq!(
+                block::SLOTS_PER_BLOCK - index,
+                pd.get_slot_runlength_lower_bound(BLOCK_INDEX * block::SLOTS_PER_BLOCK + index)
+            );
+        }
     }
 
     #[test]
