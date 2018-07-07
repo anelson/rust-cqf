@@ -347,6 +347,39 @@ impl PhysicalData {
         self.get_slot_runlength_lower_bound(index) == 0
     }
 
+    /// Scans the structure starting at `index`, returning the index of the first slot that is
+    /// empty (in the RSDF the term "unused" means the same thing).  That is, the slot is not part
+    /// of any run and is available to store a remainder.
+    ///
+    /// # Returns
+    ///
+    /// The `cqf.c` method `find_first_empty_slot` assumes it can always find a free slot, because
+    /// higher level code at insert time detects a high load factor and either resizes the
+    /// structure or fails the insert.  I don't like that kind spooky action at a distance so I've
+    /// changed this approach slightly.  As long as there is at least one available slot `free` at or
+    /// after `index`, returns `Some(free)`.  If the structure is completely full returns `None`.
+    #[inline]
+    pub fn find_first_empty_slot(&self, index: usize) -> Option<usize> {
+        let mut from = index;
+        let mut t: usize;
+
+        loop {
+            t = self.get_slot_runlength_lower_bound(from);
+            if t == 0 {
+                break;
+            }
+
+            from += t;
+
+            if from >= self.blocks.len() * block::SLOTS_PER_BLOCK {
+                //Scanned past the end of the structure and found no free slots
+                return None;
+            }
+        }
+
+        return Some(from + t);
+    }
+
     /// Given the index of a block, return that block's offset value.  Unlike the name implies,
     /// it's not the offset of the block, it's a pre-computed value of the distance between the
     /// first slot in the block (let's call it `i`) and the run-end for whatever run contains `i`,
@@ -476,7 +509,6 @@ mod tests {
     #[test]
     fn get_set_work_properly() {
         let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
-
         // first go through each slot and set it to a value derived from its index
         for index in 0..TEST_SLOTS {
             let slot_value = (index as u64) & bitmask!(pd.rbits);
@@ -679,6 +711,48 @@ mod tests {
             None,
             pd.scan_for_remainder(TEST_SLOTS - 1, REMAINDER_SLOT, REMAINDER)
         );
+    }
+
+    #[test]
+    pub fn find_first_empty_slot_tests() {
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+
+        //Initially all slots are empty, so the scan should stop at the index
+        for index in 0..TEST_SLOTS {
+            assert_eq!(Some(index), pd.find_first_empty_slot(index));
+        }
+
+        //Make some slots used
+        const TEST_SLOT: usize = 100;
+        const RUN_LENGTH: usize = 5;
+        for index in 0..RUN_LENGTH {
+            pd.set_occupied(TEST_SLOT + index, true);
+            pd.set_runend(TEST_SLOT + index, true);
+        }
+
+        for index in 0..TEST_SLOTS {
+            if index >= TEST_SLOT && index <= TEST_SLOT + RUN_LENGTH {
+                assert_eq!(
+                    Some(TEST_SLOT + RUN_LENGTH),
+                    pd.find_first_empty_slot(index)
+                );
+            } else {
+                assert_eq!(Some(index), pd.find_first_empty_slot(index));
+            }
+        }
+
+        //Pathological case (also very unlikely with a real-world RSQF structure)
+        //all slots used
+        for index in 0..TEST_SLOTS {
+            pd.set_occupied(index, true);
+            pd.set_runend(index, true);
+        }
+
+        //In this pathological case, find_first_empty_slot operates one slot at a time until the
+        //end.  It's too slow to run this for all of the test slots.  Run it for slot 0, which
+        //means it will scan the entire structure.  If it doesn't find any empty slots on that
+        //pass, it definitely won't on passes for higher slot indexes
+        assert_eq!(None, pd.find_first_empty_slot(0));
     }
 
     #[test]
