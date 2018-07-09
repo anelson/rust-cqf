@@ -6,6 +6,8 @@
 
 #![macro_use]
 
+use std::mem;
+
 /// Internal macro which generates a compile-time expression that evaluates to a u64 bitmask with
 /// the lower `n` bits set to 1, where `n` is the parameter to the macro
 ///
@@ -40,7 +42,11 @@ use std::arch::x86_64::*;
 
 /// A trait which brings in various bit-fiddling methods intended to be used with unsigned integer
 /// types.
-pub trait BitFiddling {
+pub trait BitFiddling: Sized {
+    fn bits_per_word() -> usize {
+        mem::size_of::<Self>() * 8
+    }
+
     /// Given a 64-bit integer, returns the number of bits set to 1
     #[inline]
     fn popcnt(self) -> usize;
@@ -97,13 +103,13 @@ pub trait BitFiddling {
     /// shift operation.  Note that these bits are not returned in their original position, they
     /// are returned in another word having been shifted right so they start at bit 0.
     #[inline]
-    fn shift_into(self, shift_bits: usize, shift_value: Self) -> (Self, Self)
+    fn shift_left_into(self, shift_bits: usize, shift_value: Self) -> (Self, Self)
     where
         Self: Sized;
 
     /// Specialized version of `shift_info` that operates on only a subset of bits in the word.
     ///
-    /// `shift_into()` is equivalent to `shift_into_partial` with `start_bit` equal to `0` and
+    /// `shift_left_into()` is equivalent to `shift_left_into_partial` with `start_bit` equal to `0` and
     /// `count_bits` equal to the number of bits in the word.
     ///
     /// # Arguments
@@ -117,6 +123,14 @@ pub trait BitFiddling {
     /// `shift_value` - The `shift_bits`-bit value which will be placed in the region of the word
     /// which was vacated by the shfit operation.  That region will start at `start_bit`
     ///
+    /// # Remarks
+    ///
+    /// This method is designed to support cases in which the shift operation shifts beyond the end
+    /// of the word.  If the range being shifted goes beyond the end of this word, then the
+    /// `shifted_value` value will not be accurate.  To make this accurate would require performing
+    /// the shift using a larger word type and that is slower and not worth the effort for our
+    /// application.
+    ///
     /// # Returns
     ///
     /// Returns a tuple containing two elements:
@@ -126,7 +140,7 @@ pub trait BitFiddling {
     /// shift operation.  Note that these bits are not returned in their original position, they
     /// are returned in another word having been shifted right so they start at bit 0.
     #[inline]
-    fn shift_into_partial(
+    fn shift_left_into_partial(
         self,
         start_bit: usize,
         count_bits: usize,
@@ -213,10 +227,10 @@ impl BitFiddling for u64 {
 
     #[inline]
     #[allow(unused_variables)]
-    fn shift_into(self, shift_bits: usize, shift_value: Self) -> (Self, Self) {
+    fn shift_left_into(self, shift_bits: usize, shift_value: Self) -> (Self, Self) {
         debug_assert!((shift_value & !bitmask!(shift_bits)) == 0);
 
-        //This simpler variant of shift_into is easy because it shifts the entire word
+        //This simpler variant of shift_left_into is easy because it shifts the entire word
         let new_word = (self << shift_bits) | shift_value;
         let shifted_value = self >> 64 - shift_bits;
 
@@ -224,7 +238,7 @@ impl BitFiddling for u64 {
     }
 
     #[inline]
-    fn shift_into_partial(
+    fn shift_left_into_partial(
         self,
         start_bit: usize,
         count_bits: usize,
@@ -232,9 +246,7 @@ impl BitFiddling for u64 {
         shift_value: Self,
     ) -> (Self, Self) {
         debug_assert!((shift_value & !bitmask!(shift_bits)) == 0);
-        debug_assert!(start_bit + count_bits <= 64);
         debug_assert!(count_bits > 0);
-        debug_assert!(count_bits % shift_bits == 0);
         //This is much more complicated because it's operating on a subset of the whole word.
         //First let's mask out just the subset that we're operating on:
         let mask = bitmask!(count_bits) << start_bit;
@@ -243,8 +255,14 @@ impl BitFiddling for u64 {
 
         let new_word =
             unmodified_word | (working_word << shift_bits & mask) | (shift_value << start_bit);
-        let shifted_value =
-            (working_word >> (start_bit + count_bits - shift_bits)) & bitmask!(shift_bits);
+
+        //NB: if start_bit + count_bits is beyond the end of this word, it's possible this
+        //operation will try to shift more than 64 bits.  That's why `wrapping_shr` is used
+        let shifted_value = if start_bit + count_bits - shift_bits < Self::bits_per_word() {
+            (working_word >> (start_bit + count_bits - shift_bits)) & bitmask!(shift_bits)
+        } else {
+            0
+        };
 
         (new_word, shifted_value)
     }
@@ -399,44 +417,71 @@ mod test {
     }
 
     #[test]
-    fn shift_into_test() {
-        assert_eq!((0, 0), 0x0.shift_into(9, 0));
+    fn shift_left_into_test() {
+        assert_eq!((0, 0), 0x0.shift_left_into(9, 0));
         assert_eq!(
             (0xffee_eedd_ddcc_cc00, 0),
-            0x00ff_eeee_dddd_cccc.shift_into(8, 0)
+            0x00ff_eeee_dddd_cccc.shift_left_into(8, 0)
         );
         assert_eq!(
             (0xffee_eedd_ddcc_cc00, 0xff),
-            0xffff_eeee_dddd_cccc.shift_into(8, 0)
+            0xffff_eeee_dddd_cccc.shift_left_into(8, 0)
         );
         assert_eq!(
             (0xfffe_eeed_dddc_ccca, 0x0f),
-            0xffff_eeee_dddd_cccc.shift_into(4, 0x0a)
+            0xffff_eeee_dddd_cccc.shift_left_into(4, 0x0a)
         );
     }
 
     #[test]
-    fn shift_into_partial_test() {
+    fn shift_left_into_partial_test() {
         //THis is a very fussy method.  Testing it might seem tricky.
         const START_BIT: usize = 8;
         const COUNT_BITS: usize = 48;
         const TEST_WORD: u64 = 0xffff_eeee_dddd_cccc;
 
-        assert_eq!((0, 0), 0x0.shift_into_partial(START_BIT, COUNT_BITS, 8, 0));
+        assert_eq!(
+            (0, 0),
+            0x0.shift_left_into_partial(START_BIT, COUNT_BITS, 8, 0)
+        );
 
         //when start_bits is 0 and count_bits is 64 this is the same as shift_info
         assert_eq!(
             (0xffee_eedd_ddcc_cc00, 0xff),
-            TEST_WORD.shift_into_partial(0, 64, 8, 0)
+            TEST_WORD.shift_left_into_partial(0, 64, 8, 0)
         );
 
         assert_eq!(
             (0xffee_eedd_ddcc_00cc, 0xff),
-            TEST_WORD.shift_into_partial(START_BIT, COUNT_BITS, 8, 0)
+            TEST_WORD.shift_left_into_partial(START_BIT, COUNT_BITS, 8, 0)
         );
         assert_eq!(
             (0xffee_dddd_ccaa_aacc, 0xffee),
-            TEST_WORD.shift_into_partial(START_BIT, COUNT_BITS, 16, 0xaaaa)
+            TEST_WORD.shift_left_into_partial(START_BIT, COUNT_BITS, 16, 0xaaaa)
+        );
+
+        //this is a test case from bitarray which is failing due to a shifting bug
+        //shift in the 8 bits 0x55 starting at bit 0, shifting the first three bytes of the word
+        const ANOTHER_TEST_WORD: u64 = 0xffee_ddcc_bbaa_9900;
+        assert_eq!(
+            (0xffee_ddcc_bb99_0055, 0xaa),
+            ANOTHER_TEST_WORD.shift_left_into_partial(0, 8 * 3, 8, 0x55)
+        );
+
+        //this is an edge case that happens when operating on the boundaries of a word.
+        //the shift operation will extend well past the word; the expected result is as if the word
+        //had more bits after its actual end, and after the operation only the lower 64 bits are
+        //returned.
+        assert_eq!(
+            (0x5fff_eeee_dddd_cccc, 0x00), //technical 0x0f was shifted out but when shifting off the end we don't care
+            TEST_WORD.shift_left_into_partial(60, 16, 8, 0x55)
+        );
+
+        //this is another edge case, in which the count of bits to shift is not an integer multiple
+        //of the shift_bits because it's up against the top end of the word
+        assert_eq!(
+            (0x5fff_eeee_dddd_cccc, 0xf0),
+            TEST_WORD.shift_left_into_partial(60, 4, 8, 0x55)
         );
     }
 }
