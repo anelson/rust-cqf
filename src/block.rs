@@ -177,6 +177,12 @@ impl Block {
     /// going to continue.  This can be pased back in to shift_slots as the
     /// `previous_shifted_value` argument to ensure it's placed in the next block in the right
     /// place.
+    ///
+    /// # TODO
+    ///
+    /// It turns out this return value with the remaining_slot_count isn't needed since the caller
+    /// needs to keep track of this anyway for other reasons.  Can remove it and just return the
+    /// previously shifted slot value.
     #[inline]
     #[allow(unused_variables, dead_code)]
     pub fn shift_slots_left(

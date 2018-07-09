@@ -6,7 +6,7 @@ use block;
 use std::vec::Vec;
 
 #[allow(dead_code)] // for now
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Clone)]
 pub struct PhysicalData {
     blocks: Vec<block::Block>,
     pub rbits: usize,
@@ -386,39 +386,103 @@ impl PhysicalData {
     }
 
     /// Shifts the remainder values stored in slots ahead by one, from `start_index` to
-    /// `empty_index-1`, and inserts `insert_value` into the now-unused slot at `start_index`.
+    /// `start_index+slot_count-1`, and inserts `insert_value` into the now-unused slot at `start_index`.
+    /// The contents of the slot at `start_index+slot_count-1` will be overwritten by this
+    /// operation.  It's intended that this only be performed when that slot is known to be unused
+    /// but this method does not enforce that.
     ///
     /// # Arguments
     ///
     /// * `start_index` - Index of the slot to start the shift from.  After the shift is complete,
     /// the value at `start_index` will now be at `start_index+1`, the value at `start_index+1`
-    /// will now be at `start_index+2`, etc, on up to `empty_index-1`.
+    /// will now be at `start_index+2`, etc, on up to `start_index+slot_count-1`.
     ///
-    /// * `empty_index` - Index of the slot (which must be after `start_index`) to shift into.  All
-    /// slots from `start_index` to `empty_index-1`, inclusive, will be shifted ahead one slot.
-    /// It's assumed, but not enforced, that `empty_index` corresponds to a slot that is not in
-    /// use.
+    /// * `slot_count` - Number of slots to include in the shift.  Must be at least 2 as a 1 slot
+    /// shift makes no sense.  All slots from `start_index` to `start_index+slot_count-1`, inclusive, will be shifted ahead one slot.
+    /// It's assumed, but not enforced, that `slot_count` corresponds to a slot that is not in use.
     #[inline]
     pub fn shift_slots_left(
         &mut self,
         start_index: usize,
-        empty_index: usize,
+        slot_count: usize,
         insert_val: u64,
     ) -> () {
-        assert!(empty_index > start_index);
-        assert!(empty_index < self.len());
+        assert!(slot_count > 1);
+        assert!(start_index + slot_count <= self.len());
         debug_assert!(
-            self.is_slot_empty(empty_index),
-            "attempting to shift from slot {} to a non-empty slot {}",
+            self.is_slot_empty(start_index + slot_count - 1),
+            "attempting to shift from slot {} to a non-end slot {}",
             start_index,
-            empty_index
+            start_index + slot_count - 1
         );
 
         let (start_block_index, start_intrablock_index) = self.get_slot_location(start_index);
-        let (empty_block_index, empty_intrablock_index) = self.get_slot_location(empty_index);
 
-        //TODO: Implement this now that each block is able to do a shift operation itself
-        panic!("NYI");
+        //Note this 'end' value is INCLUSIVE
+        let (end_block_index, end_intrablock_index) =
+            self.get_slot_location(start_index + slot_count - 1);
+
+        #[cfg(test)]
+        println!(
+            "start_index={} start_block_index={} start_intrablock_index={}",
+            start_index, start_block_index, start_intrablock_index
+        );
+        #[cfg(test)]
+        println!(
+            "end_index={} end_block_index={} end_intrablock_index={}",
+            start_index + slot_count - 1,
+            end_block_index,
+            end_intrablock_index
+        );
+
+        //If the entire shift is in one block that's easier
+        if start_block_index == end_block_index {
+            debug_assert_eq!(
+                end_intrablock_index - start_intrablock_index + 1,
+                slot_count
+            );
+            let rbits = self.rbits;
+            let block = self.get_block_mut(start_block_index);
+
+            block.shift_slots_left(rbits, start_intrablock_index, slot_count, insert_val);
+        } else {
+            //Shifting spans blocks
+            //Each block implements the shift-left-and-insert operation, and if passed a slot count
+            //that is beyond the range of the block it returns the number of slots left to process
+            //after that block.  It also returns the value of the slot pushed off the end of the block,
+            //which we can feed back in to the next block.
+            let mut shifted_slot = insert_val;
+
+            for i in start_block_index..(end_block_index + 1) {
+                let rbits = self.rbits;
+                let block = self.get_block_mut(i);
+
+                let (start_slot_index, slot_count) = if i == start_block_index {
+                    (
+                        start_intrablock_index,
+                        block::SLOTS_PER_BLOCK - start_intrablock_index,
+                    )
+                } else if i == end_block_index {
+                    (0, end_intrablock_index + 1)
+                } else {
+                    //this is some block in between the start and the end slot so do the whole block
+                    (0, block::SLOTS_PER_BLOCK)
+                };
+
+                #[cfg(test)]
+                println!(
+                    "block={} start_slot_index={} slot_count={} shifted_slot={}",
+                    i, start_slot_index, slot_count, shifted_slot
+                );
+
+                //NOTE: Rust as of this writing doesn't support tuple destructuring on assignment hence
+                //this awkward two-step
+                let result: (usize, u64) =
+                    block.shift_slots_left(rbits, start_slot_index, slot_count, shifted_slot);
+
+                shifted_slot = result.1;
+            }
+        }
     }
 
     /// Given the index of a block, return that block's offset value.  Unlike the name implies,
@@ -491,6 +555,19 @@ impl PhysicalData {
         );
 
         &self.blocks[index]
+    }
+
+    /// Gets a mutable reference to a block.  Using Rust lifetime trickery ensures this doesn't
+    /// result in a dangling pointer.
+    #[inline]
+    fn get_block_mut<'s: 'block, 'block>(&'s mut self, index: usize) -> &'block mut block::Block {
+        debug_assert!(
+            index < self.blocks.len(),
+            "block index {} is out of bounds",
+            index
+        );
+
+        &mut self.blocks[index]
     }
 
     /// Does the repetitive and simple math to translate from a slot index to a block index and the
@@ -797,6 +874,81 @@ mod tests {
     }
 
     #[test]
+    pub fn shift_slots_left_test() {
+        // Slot shifting is a complicated process, though the `bitarray` and `block` modules
+        // abstract most of the details away.  This test focuses on exercising the inter-block
+        // shifting mechanics.
+        //
+        // Start with a PhysicalData instance that has known values in each slot.  Perform some
+        // shifts and confirm the results are as expected.
+        fn get_slot_test_value(i: usize) -> u64 {
+            (i as u64) & bitmask!(block::BITS_PER_SLOT)
+        };
+
+        fn shift_slots_left_slow(
+            pd: &mut PhysicalData,
+            start_index: usize,
+            slot_length: usize,
+            insert_val: u64,
+        ) -> () {
+            let mut shifted_val = insert_val;
+
+            for i in start_index..start_index + slot_length {
+                shifted_val = pd.set_slot(i, shifted_val);
+            }
+        }
+
+        let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
+        for index in 0..TEST_SLOTS {
+            pd.set_slot(index, get_slot_test_value(index));
+        }
+
+        //pd is no longer mutable it's a reference
+        let pd = pd;
+
+        // each of these test cases describes a shift operation which we will perform using
+        // shift_slots_left and again manually using get_slot/set_slot, and compare the resutls
+        //
+        // ( start_index, slot_length, insert_value)
+        let test_cases = [
+            //The entire structure
+            (0, TEST_SLOTS, 0x1ff),
+            //A few slots starting on a block boundary
+            (block::SLOTS_PER_BLOCK, 5, 0x1ff),
+            //A few slots ending on a block boundary
+            (block::SLOTS_PER_BLOCK - 5, 5, 0x1ff),
+            //A few slots, straddling a block boundary
+            (block::SLOTS_PER_BLOCK - 5, 10, 0x1ff),
+            //The entire contents of just one block
+            (block::SLOTS_PER_BLOCK * 2, block::SLOTS_PER_BLOCK, 0x1ff),
+            //The entire contents of multiple blocks
+            (
+                block::SLOTS_PER_BLOCK * 2,
+                block::SLOTS_PER_BLOCK * 3,
+                0x1ff,
+            ),
+        ];
+
+        for (start_index, slot_length, insert_value) in &test_cases {
+            let context =
+                format!(
+                "TEST_SLOTS={} SLOTS_PER_BLOCK={} start_index={} slot_length={} insert_value={}",
+                TEST_SLOTS, block::SLOTS_PER_BLOCK, start_index, slot_length, insert_value
+            );
+
+            println!("shift_slots_left test case {}", context);
+
+            let mut expected_pd = pd.clone();
+            let mut actual_pd = pd.clone();
+
+            shift_slots_left_slow(&mut expected_pd, *start_index, *slot_length, *insert_value);
+            actual_pd.shift_slots_left(*start_index, *slot_length, *insert_value);
+
+            assert_data_eq(&expected_pd, &actual_pd, &context);
+        }
+    }
+
+    #[test]
     pub fn get_slot_runlength_lower_bound_test() {
         let mut pd = PhysicalData::new(TEST_SLOTS, TEST_RBITS);
 
@@ -868,6 +1020,20 @@ mod tests {
             assert_eq!(
                 run_length - (index * block::SLOTS_PER_BLOCK),
                 pd.get_block_offset(index),
+            );
+        }
+    }
+
+    fn assert_data_eq(expected: &PhysicalData, actual: &PhysicalData, context: &str) {
+        assert_eq!(expected.len(), actual.len(), "context: {}", context);
+
+        for i in 0..expected.len() {
+            assert_eq!(
+                expected.get_slot(i),
+                actual.get_slot(i),
+                "slot={} context: {}",
+                i,
+                context,
             );
         }
     }
