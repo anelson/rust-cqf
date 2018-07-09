@@ -10,6 +10,7 @@ use std::vec::Vec;
 pub struct PhysicalData {
     blocks: Vec<block::Block>,
     pub rbits: usize,
+    nslots: usize,
 }
 
 /// The type which represents the value of a hash.  Though this is the same underlying type as
@@ -57,12 +58,16 @@ impl PhysicalData {
         // Allocate a vector of Block structures.  Because of how this structure will be used,
         // the contents should be populated in advance
         let blocks = vec![Default::default(); nblocks];
-        PhysicalData { blocks, rbits }
+        PhysicalData {
+            blocks,
+            rbits,
+            nslots: nblocks * block::SLOTS_PER_BLOCK,
+        }
     }
 
     /// Gets the length of this structure in terms of the number of slots
     pub fn len(&self) -> usize {
-        self.blocks.len() * block::SLOTS_PER_BLOCK
+        self.nslots
     }
 
     /// Gets the value currently stored in the `index`th slot.  Note that this isn't necessarily
@@ -371,13 +376,49 @@ impl PhysicalData {
 
             from += t;
 
-            if from >= self.blocks.len() * block::SLOTS_PER_BLOCK {
+            if from >= self.len() {
                 //Scanned past the end of the structure and found no free slots
                 return None;
             }
         }
 
         return Some(from + t);
+    }
+
+    /// Shifts the remainder values stored in slots ahead by one, from `start_index` to
+    /// `empty_index-1`, and inserts `insert_value` into the now-unused slot at `start_index`.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_index` - Index of the slot to start the shift from.  After the shift is complete,
+    /// the value at `start_index` will now be at `start_index+1`, the value at `start_index+1`
+    /// will now be at `start_index+2`, etc, on up to `empty_index-1`.
+    ///
+    /// * `empty_index` - Index of the slot (which must be after `start_index`) to shift into.  All
+    /// slots from `start_index` to `empty_index-1`, inclusive, will be shifted ahead one slot.
+    /// It's assumed, but not enforced, that `empty_index` corresponds to a slot that is not in
+    /// use.
+    #[inline]
+    pub fn shift_slots_left(
+        &mut self,
+        start_index: usize,
+        empty_index: usize,
+        insert_val: u64,
+    ) -> () {
+        assert!(empty_index > start_index);
+        assert!(empty_index < self.len());
+        debug_assert!(
+            self.is_slot_empty(empty_index),
+            "attempting to shift from slot {} to a non-empty slot {}",
+            start_index,
+            empty_index
+        );
+
+        let (start_block_index, start_intrablock_index) = self.get_slot_location(start_index);
+        let (empty_block_index, empty_intrablock_index) = self.get_slot_location(empty_index);
+
+        //TODO: Implement this now that each block is able to do a shift operation itself
+        panic!("NYI");
     }
 
     /// Given the index of a block, return that block's offset value.  Unlike the name implies,

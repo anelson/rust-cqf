@@ -88,22 +88,44 @@ impl LogicalData {
         self.validate_quotient(quotient);
         self.validate_remainder(remainder);
 
+        let index = quotient as usize;
+
         // The task is to find the first unused slot, starting at `quotient` and if that's in use
         // then scanning forward until the first unused slot.
         //
         // Note that if there is already a run for `quotient`, we add this remainder to the run,
         // but that may require shifting subsequent runs if they are immediately adjacent to this
         // one.
-        if self.physical.is_slot_empty(quotient as usize) {
+        if self.physical.is_slot_empty(index) {
             //This is the easy case.  The quotient's home slot is not in use at all, so put the
             //remainder directly in that slot.
-            self.physical.set_slot(quotient as usize, remainder);
-            self.physical.set_occupied(quotient as usize, true);
-            self.physical.set_runend(quotient as usize, true);
+            self.physical.set_slot(index, remainder);
+            self.physical.set_occupied(index, true);
+            self.physical.set_runend(index, true);
             return ();
         }
 
-        panic!("NYI!");
+        //The easy case has been eliminated so now pursue the general case.
+        //Find a slot at `quotient` or possibly the first unused slot after it to store this
+        //remainder.
+        let runend_index = self.physical.find_run_end(index);
+
+        //We will insert the new value at the end of the run.  Of course, it's possible that this
+        //slot is currently in use by a subsequent run.  That doesn't matter; we will shift those
+        //subsequent values if needed to make room here, because we have an invariant to uphold
+        let insert_index = runend_index + 1;
+
+        //Figure out where the next empty slot is so we can shift everything from insert_into
+        //onwards into that empty slot
+        let empty_slot_index = self.physical.find_first_empty_slot(insert_index);
+
+        //TODO: handle this full scenario more gracefully
+        let empty_slot_index =
+            empty_slot_index.expect("the underlying data structure has no free slots left!");
+
+        // self.physical.shift_slots(insert_index, empty_slot_index);
+        // TODO: Implement this now
+        panic!("NYI");
     }
 
     /// In debug builds, ensures quotient values are masked out properly and only contain the

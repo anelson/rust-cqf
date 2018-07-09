@@ -145,6 +145,61 @@ impl Block {
         self.slots.set_slot(rbits, relative_index, val)
     }
 
+    /// Shifts some or all of the slots right by one slot.  This obviously will shift one slot off
+    /// the end of this block.
+    ///
+    /// # Arguments
+    ///
+    /// `rbits` - The size of each slot in bits
+    /// `start_relative_index` - The index of the slot in this block where the shift operation
+    /// should start.  `0` starts the shift from the start of the block.
+    /// `slot_count` - The number of slots to shift.  Note that this can be more than the number of
+    /// slots in a block; if so, `shift_slots` will shift from `start_relative_index` to the end of
+    /// the block, and include in its return value the `slot_count` minus the number of slots it
+    /// shifted already; this lets the caller call this method in a loop iteratively shifting all
+    /// of the slots.
+    /// `previous_shifted_slot` - If a previous block also shifted its slots, this is the value of
+    /// the slot shifted off the end of that block, which will be placed into this block at
+    /// `start_relative_index` after its contents are shifted up one.  Set to `0` for the block
+    /// where the shifting operation starts.
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple which makes it easy to perform the shift iteratively.
+    ///
+    /// `(remaining_slot_count, shifted_slot)`:
+    ///
+    /// * `remaining_slot_count` - How many slots are still to be shifted, after this block's shift
+    /// operation has completed.  A convenience value; it's `slot_count` minus the number of slots
+    /// effected by this shift operation.
+    /// * `shifted_slot` - The value in the highest-most slot in this block, which due to the shift has
+    /// overflowed the block and should be placed into the next block if the shift operation is
+    /// going to continue.  This can be pased back in to shift_slots as the
+    /// `previous_shifted_value` argument to ensure it's placed in the next block in the right
+    /// place.
+    #[inline]
+    #[allow(unused_variables, dead_code)]
+    pub fn shift_slots_left(
+        &mut self,
+        rbits: usize,
+        start_relative_index: usize,
+        slot_count: usize,
+        previous_shifted_slot: u64,
+    ) -> (usize, u64) {
+        debug_assert!(start_relative_index < SLOTS_PER_BLOCK);
+        debug_assert!(slot_count > 0);
+        debug_assert!((previous_shifted_slot & !bitmask!(rbits)) == 0);
+
+        let (remaining_slot_count, shifted_value) = self.slots.shift_slots_left(
+            rbits,
+            start_relative_index,
+            slot_count,
+            previous_shifted_slot,
+        );
+
+        (remaining_slot_count, shifted_value)
+    }
+
     /// Tests if the occupied bit for the specified relative index is set.
     pub fn is_occupied(&self, relative_index: usize) -> bool {
         debug_assert!(relative_index < SLOTS_PER_BLOCK);
