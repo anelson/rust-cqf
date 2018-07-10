@@ -37,6 +37,18 @@ pub type RemainderValue = u64;
 /// actually represent a quotient is computed in higher layers as the parameter `q` or `qbits`.
 pub type QuotientValue = u64;
 
+/// When operating on a range of slots, the operations are performed on a block-by-block basis.
+/// This iterator exposes an arbitrary slot range as an iterator that yields the block index and
+/// range in that block for every block that contains a part of the slot range
+#[derive(Debug, Copy, Clone)]
+struct SlotRangeIterator {
+    start_block_index: usize,
+    start_intrablock_index: usize,
+    end_block_index: usize,
+    end_intrablock_index: usize,
+    next_block_index: Option<usize>,
+}
+
 #[allow(dead_code)] // just for development
 #[allow(unused_variables)]
 impl PhysicalData {
@@ -102,6 +114,14 @@ impl PhysicalData {
     pub fn set_runend(&mut self, index: usize, val: bool) -> () {
         let (block_index, relative_index) = self.get_slot_location(index);
         self.blocks[block_index].set_runend(relative_index, val)
+    }
+
+    /// Shifts a portion of the `runends` bitmap left by one bit and inserts the bit `insert_val`
+    /// in the resulting space.  See `shift_slots_left` for more details; this method does for
+    /// `runends` bits what `shift_slots_left` does for slots.
+    #[inline]
+    pub fn shift_runends_left(&mut self, start_index: usize, bit_count: usize, insert_val: bool) {
+        panic!("NYI");
     }
 
     /// Tests if a given slot's "occupied" flag is set.  Note this doesn't mean that specific slot
@@ -579,10 +599,51 @@ impl PhysicalData {
 
         (block_index, intrablock_index)
     }
+
+    /// When operating on a range of slots, its helpful to know how that range of slots is
+    /// distributed across the blocks.  Often times we can perform an operation more efficiently if
+    /// we know the entire block is included.  A good example of this is shifting, which has an
+    /// optimized pathway for slot ranges that span an entire block.
+    ///
+    /// # Returns
+    ///
+    /// A tuple:
+    ///
+    /// `(start_block_index, start_intrablock_index, end_block_index, end_intrablock_index)`
+    #[inline]
+    fn get_slot_range_location(
+        &self,
+        start_index: usize,
+        slot_length: usize,
+    ) -> (usize, usize, usize, usize) {
+        let (start_block_index, start_intrablock_index) = self.get_slot_location(start_index);
+        let (end_block_index, end_intrablock_index) =
+            self.get_slot_location(start_index + slot_length - 1);
+
+        (
+            start_block_index,
+            start_intrablock_index,
+            end_block_index,
+            end_intrablock_index,
+        )
+    }
+
+    #[inline]
+    fn get_slot_range_iter(&self, start_index: usize, slot_length: usize) -> SlotRangeIterator {
+        let (start_block_index, start_intrablock_index, end_block_index, end_intrablock_index) =
+            self.get_slot_range_location(start_index, slot_length);
+
+        SlotRangeIterator::new(
+            start_block_index,
+            start_intrablock_index,
+            end_block_index,
+            end_intrablock_index,
+        )
+    }
 }
 
 #[cfg(test)]
-mod tests {
+mod physicaldata_tests {
     use super::*;
 
     const TEST_RBITS: usize = block::BITS_PER_SLOT;
@@ -1037,4 +1098,147 @@ mod tests {
             );
         }
     }
+}
+
+impl SlotRangeIterator {
+    fn new(
+        start_block_index: usize,
+        start_intrablock_index: usize,
+        end_block_index: usize,
+        end_intrablock_index: usize,
+    ) -> SlotRangeIterator {
+        debug_assert!(start_intrablock_index < block::SLOTS_PER_BLOCK);
+        debug_assert!(end_intrablock_index < block::SLOTS_PER_BLOCK);
+        SlotRangeIterator {
+            start_block_index,
+            start_intrablock_index,
+            end_block_index,
+            end_intrablock_index,
+            next_block_index: Some(start_block_index),
+        }
+    }
+}
+/// Implements iteration over a range of slots, where each item yielded is a tuple describing a
+/// block containing some part of that range:
+///
+/// `(block_index, start_intrablock_index, slot_length)`
+impl Iterator for SlotRangeIterator {
+    type Item = (usize, usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        //If next_block_index is None then return None, otherwise do something with the actual
+        //index value
+        self.next_block_index.map(|next_block| {
+            if self.start_block_index == self.end_block_index {
+                //There's only one block; this will be easy
+                self.next_block_index = None;
+                (
+                    self.start_block_index,
+                    self.start_intrablock_index,
+                    self.end_intrablock_index - self.start_intrablock_index + 1,
+                )
+            } else {
+                if next_block < self.end_block_index {
+                    //There are more blocks
+                    self.next_block_index = Some(next_block + 1);
+                } else {
+                    //That's the last one
+                    self.next_block_index = None;
+                }
+
+                //Multiple blocks.  Need to figure out where the next block is and go with that.
+                if next_block == self.start_block_index {
+                    //Current block is the start block, but it's there's more than one block so we
+                    //know this block goes from the start_intrablock_index to the end of the block
+                    (
+                        self.start_block_index,
+                        self.start_intrablock_index,
+                        block::SLOTS_PER_BLOCK - self.start_intrablock_index,
+                    )
+                } else if next_block == self.end_block_index {
+                    //This is the last block
+                    //We know this isn't the only block, so the range starts at offset 0 and runs
+                    //to the end block index (+1 here because we're not yielding the index we're
+                    //yielding the length
+                    (self.end_block_index, 0, self.end_intrablock_index + 1)
+                } else {
+                    //This is some block in between start and end.  Since it's not the start and
+                    //it's not the end we know it is an entire block
+                    (next_block, 0, block::SLOTS_PER_BLOCK)
+                }
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod slot_range_iterator_tests {
+    use super::*;
+
+    #[test]
+    pub fn iterator_tests() {
+        // test cases:
+        //
+        // (start_block_index, start_intrablock_index, end_block_index, end_intrablock_index,
+        // expected_blocks)
+        let test_data = [
+            //Start with an easy single slot range; start and end index are the same slot
+            (0, 0, 0, 0, vec![(0, 0, 1)]),
+            //A range of two slots, same block
+            (0, 0, 0, 1, vec![(0, 0, 2)]),
+            //An entire block
+            (
+                1,
+                0,
+                1,
+                block::SLOTS_PER_BLOCK - 1,
+                vec![(1, 0, block::SLOTS_PER_BLOCK)],
+            ),
+            //Multiple entire blocks
+            (
+                1,
+                0,
+                3,
+                block::SLOTS_PER_BLOCK - 1,
+                vec![
+                    (1, 0, block::SLOTS_PER_BLOCK),
+                    (2, 0, block::SLOTS_PER_BLOCK),
+                    (3, 0, block::SLOTS_PER_BLOCK),
+                ],
+            ),
+            //Parts of the start and end block, and whole blocks in between
+            (
+                1,
+                5,
+                4,
+                block::SLOTS_PER_BLOCK - 32,
+                vec![
+                    (1, 5, block::SLOTS_PER_BLOCK - 5),
+                    (2, 0, block::SLOTS_PER_BLOCK),
+                    (3, 0, block::SLOTS_PER_BLOCK),
+                    (4, 0, block::SLOTS_PER_BLOCK - 32 + 1),
+                ],
+            ),
+        ];
+
+        for (
+            start_block_index,
+            start_intrablock_index,
+            end_block_index,
+            end_intrablock_index,
+            expected_blocks,
+        ) in &test_data
+        {
+            let mut range = SlotRangeIterator::new(
+                *start_block_index,
+                *start_intrablock_index,
+                *end_block_index,
+                *end_intrablock_index,
+            );
+
+            let blocks = range.collect::<Vec<_>>();
+            assert_eq!(*expected_blocks, blocks, "range: {:?}", range);
+        }
+    }
+
 }
