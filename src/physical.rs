@@ -104,6 +104,68 @@ impl PhysicalData {
         self.blocks[block_index].set_slot(self.rbits, relative_index, val)
     }
 
+    /// Shifts the remainder values stored in slots and the runend bits stored in `runends` ahead by one, from `start_index` to
+    /// `start_index+slot_count-1`, inserts `insert_slot` into the now-unused slot at `start_index`, and inserts `insert_runend` into the now-unused runend bit at `start_index`.
+    /// The contents of the slot and runend at `start_index+slot_count-1` will be overwritten by this
+    /// operation.  It's intended that this only be performed when that slot is known to be unused
+    /// but this method does not enforce that.
+    ///
+    /// This method is equivalent to `shift_slots_left` and `shift_runends_left` but is faster
+    /// because it avoids doing some shift computations twice.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_index` - Index of the slot to start the shift from.  After the shift is complete,
+    /// the value at `start_index` will now be at `start_index+1`, the value at `start_index+1`
+    /// will now be at `start_index+2`, etc, on up to `start_index+slot_count-1`.
+    ///
+    /// * `slot_count` - Number of slots to include in the shift.  Must be at least 2 as a 1 slot
+    /// shift makes no sense.  All slots from `start_index` to `start_index+slot_count-1`, inclusive, will be shifted ahead one slot.
+    /// It's assumed, but not enforced, that `slot_count` corresponds to a slot that is not in use.
+    ///
+    /// * `insert_slot` - The new slot value to insert at `start_index`.  The previous value will
+    /// be shifted left to `start_index+1`, from `start_index+1` to `start_index+2`, etc up to
+    /// `slot_count` slots
+    ///
+    /// * `insert_runend` - The new runend bit value to insert at `start_index`
+    pub fn shift_contents_left(
+        &mut self,
+        start_index: usize,
+        slot_count: usize,
+        insert_slot: u64,
+        insert_runend: bool,
+    ) -> () {
+        //Forgive this bit of repetition but for operations that shift both runends and slots,
+        //which includes such performance-sensitive operations as `insert`, it's more efficient to
+        //do these operations together.
+        assert!(slot_count > 1);
+        assert!(start_index + slot_count <= self.len());
+
+        //Perform this operation one block at a time
+        //Shifting spans blocks
+        //Each block implements the shift-left-and-insert operation, and if passed a slot count
+        //that is beyond the range of the block it returns the number of slots left to process
+        //after that block.  It also returns the value of the slot pushed off the end of the block,
+        //which we can feed back in to the next block.
+        let mut shifted_slot = insert_slot;
+        let mut shifted_bit = insert_runend;
+
+        for (block_index, start_intrablock_index, slot_length) in
+            self.get_slot_range_iter(start_index, slot_count)
+        {
+            let rbits = self.rbits;
+            let block = self.get_block_mut(block_index);
+            shifted_bit =
+                block.shift_runends_left(start_intrablock_index, slot_length, shifted_bit);
+
+            //NOTE: Rust as of this writing doesn't support tuple destructuring on assignment hence
+            //this awkward two-step
+            let result: (usize, u64) =
+                block.shift_slots_left(rbits, start_intrablock_index, slot_length, shifted_slot);
+            shifted_slot = result.1;
+        }
+    }
+
     /// Tests if a given slot's "runend" flag is set.  
     pub fn is_runend(&self, index: usize) -> bool {
         let (block_index, relative_index) = self.get_slot_location(index);
@@ -119,7 +181,6 @@ impl PhysicalData {
     /// Shifts a portion of the `runends` bitmap left by one bit and inserts the bit `insert_val`
     /// in the resulting space.  See `shift_slots_left` for more details; this method does for
     /// `runends` bits what `shift_slots_left` does for slots.
-    #[inline]
     pub fn shift_runends_left(&mut self, start_index: usize, bit_count: usize, insert_val: bool) {
         let mut shifted_val = insert_val;
 
@@ -427,7 +488,6 @@ impl PhysicalData {
     /// * `slot_count` - Number of slots to include in the shift.  Must be at least 2 as a 1 slot
     /// shift makes no sense.  All slots from `start_index` to `start_index+slot_count-1`, inclusive, will be shifted ahead one slot.
     /// It's assumed, but not enforced, that `slot_count` corresponds to a slot that is not in use.
-    #[inline]
     pub fn shift_slots_left(
         &mut self,
         start_index: usize,
@@ -582,6 +642,10 @@ impl PhysicalData {
         )
     }
 
+    /// When performing an operation on a range of slots we almost always need to decompose that
+    /// into an operation on each block that contains part of that range.  This method takes a
+    /// slot index and length and produces an iterator that yields each block containing a part of
+    /// the range, as well as the location in the block containing the range.
     #[inline]
     fn get_slot_range_iter(&self, start_index: usize, slot_length: usize) -> SlotRangeIterator {
         let (start_block_index, start_intrablock_index, end_block_index, end_intrablock_index) =
@@ -986,6 +1050,12 @@ mod physicaldata_tests {
             actual_pd.shift_slots_left(*start_index, *slot_length, *insert_value);
             actual_pd.shift_runends_left(*start_index, *slot_length, *insert_bit);
 
+            assert_data_eq(&expected_pd, &actual_pd, &context);
+
+            //Repeat the test using `shift_contents_left` that operates on slots and runends in
+            //tandem
+            let mut actual_pd = pd.clone();
+            actual_pd.shift_contents_left(*start_index, *slot_length, *insert_value, *insert_bit);
             assert_data_eq(&expected_pd, &actual_pd, &context);
         }
     }
