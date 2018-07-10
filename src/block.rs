@@ -283,6 +283,43 @@ impl Block {
             }
         }
     }
+
+    /// Shifts the runends bitmap to the left, starting at `start_relative_index`-th bit, with
+    /// `bit_count` bits included in the shift.  This works the same in concept as
+    /// `shift_slots_left` except that method operates on the slots in the block and this method
+    /// operates on the bits in the `runends` bitmap each of which corresponds to a slot.
+    ///
+    /// In normal use, slots and runends are shifted in sync, though that's not enforced at this
+    /// level.
+    ///
+    /// # Returns
+    ///
+    /// `shifted_bit` - the value of the `runends` bit at `start_relative_index+bit_count-1` which
+    /// was overwritten by this shift operation.  This allows the caller to shift across multiple
+    /// blocks by shifting a lower block and then passing this `shifted_bit` return value into the
+    /// next block's shift operation as `previous_shifted_bit`
+    #[inline]
+    pub fn shift_runends_left(
+        &mut self,
+        start_relative_index: usize,
+        bit_count: usize,
+        previous_shifted_bit: bool,
+    ) -> bool {
+        let (new_runends, shifted_bit) = self.runends.shift_left_into_partial(
+            start_relative_index, //bit index at which to start the shift (`previous_shifted_bit` is inserted here)
+            bit_count, //number of bits to include in the shift operation.  the bit at `start_relative_index+bit_count-1` is overwritten
+            1, //number of bits to shift by; just one bit in this case we're inserting a runend bit
+            if previous_shifted_bit { 0x01 } else { 0x00 }, //convert `previous_shifted_bit` into a u64 to insert at `start_relative_index`
+        );
+
+        self.runends = new_runends;
+
+        if shifted_bit == 0 {
+            false
+        } else {
+            true
+        }
+    }
 }
 
 #[cfg(test)]
