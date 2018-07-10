@@ -405,35 +405,27 @@ impl PhysicalData {
             remainder,
             self.rbits
         );
-        let (mut block_index, mut intrablock_index) = self.get_slot_location(run_end);
-        let (home_block_index, home_intrablock_index) = self.get_slot_location(home_slot);
-        let mut block = self.get_block(block_index);
 
-        loop {
-            if block.get_slot(self.rbits, intrablock_index) == remainder {
-                return Some(block_index * block::SLOTS_PER_BLOCK + intrablock_index);
-            }
+        for (block_index, start_intrablock_index, slot_length) in
+            self.get_slot_range_iter(home_slot, run_end - home_slot + 1)
+                .rev()
+        {
+            let block = self.get_block(block_index);
 
-            //Not found at this slot.
-            //Stop the search if this was the home slot
-            if block_index == home_block_index && intrablock_index == home_intrablock_index {
-                return None;
-            }
+            for slot_index in (start_intrablock_index..start_intrablock_index + slot_length).rev() {
+                //If we hit a runend, abort the search it means this slot belongs to some other run
+                if block.is_runend(start_intrablock_index) {
+                    return None;
+                }
 
-            //Move back one slot
-            if intrablock_index > 0 {
-                intrablock_index -= 1;
-            } else {
-                block_index -= 1;
-                block = self.get_block(block_index);
-                intrablock_index = block::SLOTS_PER_BLOCK - 1;
-            }
-
-            //Stop if we've reached another run end, otherwise keep scanning
-            if block.is_runend(intrablock_index) {
-                return None;
+                if block.get_slot(self.rbits, slot_index) == remainder {
+                    return Some(block_index * block::SLOTS_PER_BLOCK + slot_index);
+                }
             }
         }
+
+        //Did not find it
+        return None;
     }
 
     /// Given the index of a slot `index`, tests if that slot is empty.  Note that "empty" does not
