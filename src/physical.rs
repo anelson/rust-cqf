@@ -46,7 +46,12 @@ struct SlotRangeIterator {
     start_intrablock_index: usize,
     end_block_index: usize,
     end_intrablock_index: usize,
+
+    //The next block index to return when iterating forward
     next_block_index: Option<usize>,
+
+    //The next block index to return when iterating backward
+    next_back_block_index: Option<usize>,
 }
 
 #[allow(dead_code)] // just for development
@@ -1173,7 +1178,14 @@ impl SlotRangeIterator {
             end_block_index,
             end_intrablock_index,
             next_block_index: Some(start_block_index),
+            next_back_block_index: Some(end_block_index),
         }
+    }
+
+    // Set when this iterator has iterated the final block
+    fn set_end(&mut self) {
+        self.next_block_index = None;
+        self.next_back_block_index = None;
     }
 }
 /// Implements iteration over a range of slots, where each item yielded is a tuple describing a
@@ -1189,7 +1201,7 @@ impl Iterator for SlotRangeIterator {
         self.next_block_index.map(|next_block| {
             if self.start_block_index == self.end_block_index {
                 //There's only one block; this will be easy
-                self.next_block_index = None;
+                self.set_end();
                 (
                     self.start_block_index,
                     self.start_intrablock_index,
@@ -1201,7 +1213,7 @@ impl Iterator for SlotRangeIterator {
                     self.next_block_index = Some(next_block + 1);
                 } else {
                     //That's the last one
-                    self.next_block_index = None;
+                    self.set_end();
                 }
 
                 //Multiple blocks.  Need to figure out where the next block is and go with that.
@@ -1229,6 +1241,59 @@ impl Iterator for SlotRangeIterator {
     }
 }
 
+/// Implements iteration over a range of slots, where each item yielded is a tuple describing a
+/// block containing some part of that range:
+///
+/// `(block_index, start_intrablock_index, slot_length)`
+impl DoubleEndedIterator for SlotRangeIterator {
+    /// Iterates just like `next` except from the end of the range.
+    ///
+    /// Confusingly, `DoubleEndedIterator` supports iteration forward AND backward on the same
+    /// iterator; the iteration ends when the forwrad and bcakward positions meet
+    fn next_back(&mut self) -> Option<Self::Item> {
+        //If next_back_block_index is None then return none otherwise do something
+        self.next_back_block_index.map(|next_block| {
+            if self.start_block_index == self.end_block_index {
+                //There's only one block; this will be easy
+                self.set_end();
+                (
+                    self.start_block_index,
+                    self.start_intrablock_index,
+                    self.end_intrablock_index - self.start_intrablock_index + 1,
+                )
+            } else {
+                if next_block > self.start_block_index {
+                    //There are more blocks
+                    self.next_back_block_index = Some(next_block - 1);
+                } else {
+                    //That's the last one
+                    self.set_end();
+                }
+
+                //Multiple blocks.  Need to figure out where the next block is and go with that.
+                if next_block == self.start_block_index {
+                    //Current block is the start block, but it's there's more than one block so we
+                    //know this block goes from the start_intrablock_index to the end of the block
+                    (
+                        self.start_block_index,
+                        self.start_intrablock_index,
+                        block::SLOTS_PER_BLOCK - self.start_intrablock_index,
+                    )
+                } else if next_block == self.end_block_index {
+                    //This is the last block
+                    //We know this isn't the only block, so the range starts at offset 0 and runs
+                    //to the end block index (+1 here because we're not yielding the index we're
+                    //yielding the length
+                    (self.end_block_index, 0, self.end_intrablock_index + 1)
+                } else {
+                    //This is some block in between start and end.  Since it's not the start and
+                    //it's not the end we know it is an entire block
+                    (next_block, 0, block::SLOTS_PER_BLOCK)
+                }
+            }
+        })
+    }
+}
 #[cfg(test)]
 mod slot_range_iterator_tests {
     use super::*;
@@ -1296,6 +1361,12 @@ mod slot_range_iterator_tests {
 
             let blocks = range.collect::<Vec<_>>();
             assert_eq!(*expected_blocks, blocks, "range: {:?}", range);
+
+            //Now test the same iterator but in the reverse direction
+            let blocks: Vec<(usize, usize, usize)> = range.rev().collect::<Vec<_>>();
+            let mut expected_blocks = expected_blocks.clone();
+            expected_blocks.reverse();
+            assert_eq!(expected_blocks, blocks, "range: {:?}", range);
         }
     }
 
