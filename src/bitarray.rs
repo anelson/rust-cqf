@@ -9,7 +9,7 @@ use std::mem;
 /// computations at high speed.  To the extent those operations are not RSQF specific but are
 /// general purpose bit-flippery, they are abstracted away behind this trait and its corresponding
 /// implementation on `u64`
-pub trait SingleBitArray {
+pub trait SingleBitArray: BitFiddling {
     #[inline]
     fn get_bit(self, index: usize) -> bool;
 
