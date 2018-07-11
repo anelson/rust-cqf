@@ -413,13 +413,14 @@ impl PhysicalData {
             let block = self.get_block(block_index);
 
             for slot_index in (start_intrablock_index..start_intrablock_index + slot_length).rev() {
-                //If we hit a runend, abort the search it means this slot belongs to some other run
-                if block.is_runend(start_intrablock_index) {
-                    return None;
-                }
-
                 if block.get_slot(self.rbits, slot_index) == remainder {
                     return Some(block_index * block::SLOTS_PER_BLOCK + slot_index);
+                }
+
+                //If we hit a runend, abort the search it means all subsequent slots belong to
+                //another run
+                if block.is_runend(start_intrablock_index) {
+                    return None;
                 }
             }
         }
@@ -904,6 +905,13 @@ mod physicaldata_tests {
         assert_eq!(
             None,
             pd.scan_for_remainder(TEST_SLOTS - 1, REMAINDER_SLOT, REMAINDER)
+        );
+
+        //But if we set the home slot and the remainder as the same, as would happen when a
+        //quotient has a single value and is in its home slot, it should find it.
+        assert_eq!(
+            Some(REMAINDER_SLOT),
+            pd.scan_for_remainder(REMAINDER_SLOT, REMAINDER_SLOT, REMAINDER)
         );
     }
 
