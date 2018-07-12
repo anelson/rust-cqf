@@ -238,6 +238,16 @@ impl Block {
         (self.occupieds & !bitmask!(skip_count)).popcnt_first_n(relative_index)
     }
 
+    #[inline]
+    pub fn count_occupieds(&self, relative_index: usize, bit_count: usize) -> usize {
+        assert!(bit_count > 0);
+        debug_assert!(relative_index < SLOTS_PER_BLOCK);
+        debug_assert!(bit_count <= SLOTS_PER_BLOCK);
+        debug_assert!(relative_index + bit_count <= SLOTS_PER_BLOCK);
+
+        self.occupieds.count_set_bits(relative_index, bit_count)
+    }
+
     /// Tests if the runend bit for the specified relative index is set.
     pub fn is_runend(&self, relative_index: usize) -> bool {
         debug_assert!(relative_index < SLOTS_PER_BLOCK);
@@ -250,6 +260,16 @@ impl Block {
         debug_assert!(relative_index < SLOTS_PER_BLOCK);
 
         self.runends.set_bit(relative_index, val);
+    }
+
+    #[inline]
+    pub fn count_runends(&self, relative_index: usize, bit_count: usize) -> usize {
+        assert!(bit_count > 0);
+        debug_assert!(relative_index < SLOTS_PER_BLOCK);
+        debug_assert!(bit_count <= SLOTS_PER_BLOCK);
+        debug_assert!(relative_index + bit_count <= SLOTS_PER_BLOCK);
+
+        self.runends.count_set_bits(relative_index, bit_count)
     }
 
     /// Scans through this block looking for the `rank`-th set runend bit.  If it finds it, returns
@@ -419,6 +439,41 @@ mod block_tests {
                 assert_eq!(j - i + 1, block.get_occupied_rank_skip_n(i, j));
             }
         }
+    }
+
+    #[test]
+    pub fn count_occupieds_tests() {
+        let mut block: Block = Block {
+            ..Default::default()
+        };
+
+        assert_eq!(0, block.count_occupieds(0, SLOTS_PER_BLOCK));
+
+        block.set_occupied(1, true);
+
+        assert_eq!(0, block.count_occupieds(0, 1));
+        assert_eq!(1, block.count_occupieds(0, 2));
+        assert_eq!(1, block.count_occupieds(0, SLOTS_PER_BLOCK));
+        assert_eq!(1, block.count_occupieds(1, 1));
+        assert_eq!(1, block.count_occupieds(1, SLOTS_PER_BLOCK - 1));
+        assert_eq!(0, block.count_occupieds(2, SLOTS_PER_BLOCK - 2));
+
+        //Set all occupied bits and play with how many are counted
+        block.occupieds = std::u64::MAX;
+
+        assert_eq!(1, block.count_occupieds(0, 1));
+        assert_eq!(2, block.count_occupieds(0, 2));
+        assert_eq!(3, block.count_occupieds(0, 3));
+        assert_eq!(4, block.count_occupieds(0, 4));
+        assert_eq!(SLOTS_PER_BLOCK, block.count_occupieds(0, SLOTS_PER_BLOCK));
+        assert_eq!(
+            SLOTS_PER_BLOCK - 1,
+            block.count_occupieds(0, SLOTS_PER_BLOCK - 1)
+        );
+        assert_eq!(
+            SLOTS_PER_BLOCK - 2,
+            block.count_occupieds(0, SLOTS_PER_BLOCK - 2)
+        );
     }
 
     #[test]
