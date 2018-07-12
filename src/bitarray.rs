@@ -27,15 +27,13 @@ pub trait SingleBitArray: BitFiddling {
     #[inline]
     fn get_first_n_bits(self, n: usize) -> u64;
 
-    /// Counts the number of set bits in the array.  This is often called a POPCNT (for "population
-    /// count") operation.
-    #[inline]
-    fn count_set_bits(self) -> usize;
-
     /// Counts how many set bits are in the array from bit 0 counting `n` bits.  This is also known
     /// as a RANK operation
     #[inline]
     fn count_first_n_set_bits(self, n: usize) -> usize;
+
+    #[inline]
+    fn count_set_bits(self, relative_index: usize, bit_count: usize) -> usize;
 }
 
 impl SingleBitArray for u64 {
@@ -67,18 +65,30 @@ impl SingleBitArray for u64 {
         self & bitmask!(n)
     }
 
-    /// Counts the number of set bits in the array.  This is often called a POPCNT (for "population
-    /// count") operation.
-    #[inline]
-    fn count_set_bits(self) -> usize {
-        self.popcnt()
-    }
-
     /// Counts how many set bits are in the array from bit 0 counting `n` bits.  This is also known
     /// as a RANK operation
     #[inline]
     fn count_first_n_set_bits(self, n: usize) -> usize {
         self.popcnt_first_n(n)
+    }
+
+    #[inline]
+    fn count_set_bits(self, relative_index: usize, bit_count: usize) -> usize {
+        const BITS_PER_WORD: usize = mem::size_of::<u64>() * 8;
+
+        assert!(bit_count > 0);
+        debug_assert!(relative_index < BITS_PER_WORD);
+        debug_assert!(bit_count <= BITS_PER_WORD);
+        debug_assert!(relative_index + bit_count <= BITS_PER_WORD);
+
+        if relative_index == 0 && bit_count == BITS_PER_WORD {
+            self.popcnt()
+        } else if relative_index == 0 {
+            self.count_first_n_set_bits(bit_count - 1)
+        } else {
+            // Some subset of the word
+            (self & !bitmask!(relative_index)).popcnt_first_n(relative_index + bit_count - 1)
+        }
     }
 }
 
@@ -881,7 +891,39 @@ impl MultiBitArrayHelper for [u64] {
 }
 
 #[cfg(test)]
-mod tests {
+mod singlebitarray_tests {
+    use super::*;
+
+    #[test]
+    pub fn count_set_bits_test() {
+        let mut word = 0u64;
+
+        assert_eq!(0, word.count_set_bits(0, 64));
+
+        word.set_bit(1, true);
+
+        assert_eq!(0, word.count_set_bits(0, 1));
+        assert_eq!(1, word.count_set_bits(0, 2));
+        assert_eq!(1, word.count_set_bits(0, 64));
+        assert_eq!(1, word.count_set_bits(1, 1));
+        assert_eq!(1, word.count_set_bits(1, 64 - 1));
+        assert_eq!(0, word.count_set_bits(2, 64 - 2));
+
+        //Set all occupied bits and play with how many are counted
+        word = ::std::u64::MAX;
+
+        assert_eq!(1, word.count_set_bits(0, 1));
+        assert_eq!(2, word.count_set_bits(0, 2));
+        assert_eq!(3, word.count_set_bits(0, 3));
+        assert_eq!(4, word.count_set_bits(0, 4));
+        assert_eq!(64, word.count_set_bits(0, 64));
+        assert_eq!(64 - 1, word.count_set_bits(0, 64 - 1));
+        assert_eq!(64 - 2, word.count_set_bits(0, 64 - 2));
+    }
+
+}
+#[cfg(test)]
+mod multibitarray_tests {
     use super::*;
     extern crate rand;
 
