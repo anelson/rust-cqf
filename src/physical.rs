@@ -109,6 +109,13 @@ impl PhysicalData {
         self.blocks[block_index].set_slot(self.rbits, relative_index, val)
     }
 
+    /// NB: This is not used currently.  I abandoned it for now because I felt it was a premature
+    /// optimization.  The challenge is that shifting slots and shifting runends is not the same
+    /// operation because the shfits need to operate on different ranges.  This seems like a detail
+    /// that `LogicalData` should be worried about, not something at this level.  If profiling
+    /// later on shows that there's really that much value in saving the repetitive block range
+    /// computations, then we can revisit this
+    ///
     /// Shifts the remainder values stored in slots and the runend bits stored in `runends` ahead by one, from `start_index` to
     /// `start_index+slot_count-1`, inserts `insert_slot` into the now-unused slot at `start_index`, and inserts `insert_runend` into the now-unused runend bit at `start_index`.
     /// The contents of the slot and runend at `start_index+slot_count-1` will be overwritten by this
@@ -183,6 +190,20 @@ impl PhysicalData {
         self.blocks[block_index].set_runend(relative_index, val)
     }
 
+    /// Counts the number of set runend bits in the specified range.
+    pub fn count_runends(&self, start_index: usize, count: usize) -> usize {
+        let mut set_bit_count: usize = 0;
+
+        for (block_index, start_intrablock_index, slot_length) in
+            self.get_slot_range_iter(start_index, count)
+        {
+            set_bit_count +=
+                self.blocks[block_index].count_runends(start_intrablock_index, slot_length);
+        }
+
+        set_bit_count
+    }
+
     /// Shifts a portion of the `runends` bitmap left by one bit and inserts the bit `insert_val`
     /// in the resulting space.  See `shift_slots_left` for more details; this method does for
     /// `runends` bits what `shift_slots_left` does for slots.
@@ -195,20 +216,6 @@ impl PhysicalData {
             let block = self.get_block_mut(block_index);
             shifted_val = block.shift_runends_left(start_intrablock_index, slot_length, shifted_val)
         }
-    }
-
-    /// Tests if a given slot's "occupied" flag is set.  Note this doesn't mean that specific slot
-    /// has data in it, it means the quotient with that slot as it's home slot is present somewhere
-    /// in the filter.
-    pub fn is_occupied(&self, index: usize) -> bool {
-        let (block_index, relative_index) = self.get_slot_location(index);
-        self.blocks[block_index].is_occupied(relative_index)
-    }
-
-    /// Sets the occupied bit for the specified index.
-    pub fn set_occupied(&mut self, index: usize, val: bool) -> () {
-        let (block_index, relative_index) = self.get_slot_location(index);
-        self.blocks[block_index].set_occupied(relative_index, val)
     }
 
     /// Given an quotient `index` which identifies a slot containining a run (note: not necessarily the run corresponding
@@ -354,6 +361,34 @@ impl PhysicalData {
                 }
             }
         }
+    }
+
+    /// Tests if a given slot's "occupied" flag is set.  Note this doesn't mean that specific slot
+    /// has data in it, it means the quotient with that slot as it's home slot is present somewhere
+    /// in the filter.
+    pub fn is_occupied(&self, index: usize) -> bool {
+        let (block_index, relative_index) = self.get_slot_location(index);
+        self.blocks[block_index].is_occupied(relative_index)
+    }
+
+    /// Sets the occupied bit for the specified index.
+    pub fn set_occupied(&mut self, index: usize, val: bool) -> () {
+        let (block_index, relative_index) = self.get_slot_location(index);
+        self.blocks[block_index].set_occupied(relative_index, val)
+    }
+
+    /// Counts the number of set runend bits in the specified range.
+    pub fn count_occupieds(&self, start_index: usize, count: usize) -> usize {
+        let mut set_bit_count: usize = 0;
+
+        for (block_index, start_intrablock_index, slot_length) in
+            self.get_slot_range_iter(start_index, count)
+        {
+            set_bit_count +=
+                self.blocks[block_index].count_occupieds(start_intrablock_index, slot_length);
+        }
+
+        set_bit_count
     }
 
     /// Given a quotient value `quotient` (in the paper this is `h0(x)` or sometimes `q`) attempts
