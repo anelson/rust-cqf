@@ -31,3 +31,8 @@ harness, so don't use it.
 * [Morning Paper explainer for the actual
   paper](https://blog.acolyer.org/2017/08/08/a-general-purpose-counting-filter-making-every-bit-count/)
 * [The actual paper](https://www3.cs.stonybrook.edu/~ppandey/files/p775-pandey.pdf)
+
+# License
+
+`rust-cqf` is dual-licensed under the Apache 2.0 and MIT licenses.
+
