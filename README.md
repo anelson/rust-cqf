@@ -1,3 +1,8 @@
+# (R)CQRF, counting quotient filter
+
+I based this on a Go implementation by `nfisher` (linked below).  It's not complete yet and doesn't even pass its test
+harness, so don't use it.
+
 # Notes from the CQF code
 
 ## Key terms
